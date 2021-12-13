@@ -30,6 +30,8 @@
 #include "preproc.h"
 #include "kernel/yosys.h"
 #include "libs/sha1/sha1.h"
+#include "masm_expect.h"
+#include "transform_sanitizer.h"
 #include <stdarg.h>
 
 YOSYS_NAMESPACE_BEGIN
@@ -510,7 +512,14 @@ struct VerilogFrontend : public Frontend {
 		if (flag_nodpi)
 			error_on_dpi_function(current_ast);
 
-		AST::process(design, current_ast, flag_dump_ast1, flag_dump_ast2, flag_no_dump_ptr, flag_dump_vlog1, flag_dump_vlog2, flag_dump_rtlil, flag_nolatches,
+		masm_frontend::HoistExpectTasks masm_expect_hoister(current_ast);
+
+		auto hoisted = masm_expect_hoister.transformed();
+		masm_frontend::TransformSanitizer checker(current_ast, hoisted);
+		checker.check();
+
+
+		AST::process(design, hoisted, flag_dump_ast1, flag_dump_ast2, flag_no_dump_ptr, flag_dump_vlog1, flag_dump_vlog2, flag_dump_rtlil, flag_nolatches,
 				flag_nomeminit, flag_nomem2reg, flag_mem2reg, flag_noblackbox, lib_mode, flag_nowb, flag_noopt, flag_icells, flag_pwires, flag_nooverwrite, flag_overwrite, flag_defer, default_nettype_wire);
 
 
@@ -521,6 +530,7 @@ struct VerilogFrontend : public Frontend {
 		log_assert(user_type_stack.size() == 2);
 		user_type_stack.clear();
 
+		delete hoisted;
 		delete current_ast;
 		current_ast = NULL;
 

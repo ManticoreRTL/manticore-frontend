@@ -385,6 +385,12 @@ supply1 { return TOK_SUPPLY1; }
 	return TOK_ID;
 }
 
+
+"$"(masm_expect|masm_stop|masm_abort) {
+	yylval->string = new std::string(yytext);
+	return TOK_ID;
+}
+
 "$"(setup|hold|setuphold|removal|recovery|recrem|skew|timeskew|fullskew|nochange) {
 	if (!specify_mode) REJECT;
 	yylval->string = new std::string(yytext);

@@ -1831,7 +1831,7 @@ struct_member_type: { astbuf1 = new AstNode(AST_STRUCT_ITEM); } member_type_toke
 	;
 
 member_type_token:
-	  member_type 
+	  member_type
 	| hierarchical_type_id {
 			// use a clone of the typedef definition nodes
 			auto template_node = copyTypeDefinition(*$1);
