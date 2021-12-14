@@ -26,6 +26,10 @@ class HoistExpectTasks
 
 	AstNode *transformed();
 
+	static std::string getMasmPrivilagedModuleName() {
+		return "\\$MASM_PRIVILAGED";
+	}
+
       private:
 #define DEFINE_DISPATH_METHOD(ast_type) void __transform
 	using Stack = std::stack<AstNode *, std::vector<AstNode *>>;
@@ -37,13 +41,15 @@ class HoistExpectTasks
 	DISPATCH_DECL(AST_BLOCK);
 	DISPATCH_DECL(AST_FOR);
 	DISPATCH_DECL(AST_WHILE);
+	DISPATCH_DECL(AST_REPEAT);
 	DISPATCH_DECL(AST_CASE);
 	DISPATCH_DECL(AST_TCALL);
+	DISPATCH_DECL(AST_DESIGN);
 
 	std::string freshName(const std::string &prefix, const AstNode *node) const
 	{
 
-		return stringf("\\%s.$masm_expect$.%s.$%d", prefix.c_str(), node->loc_string().c_str(), m_fresh_index++);
+		return stringf("\\%s.%s.%d", prefix.c_str(), node->str.c_str(), m_fresh_index++);
 	}
 
 	// create (newly allocated) conjunction expression from the stack of
@@ -78,6 +84,33 @@ class HoistExpectTasks
 		}
 	}
 
+	bool isValidTaskSignature(AstNode *task_call) const
+	{
+		log_assert(task_call->type == AST::AST_TCALL);
+
+		if (task_call->str == "$masm_expect") {
+
+			if (GetSize(task_call->children) > 2) {
+				log_error("%s requires at most 2 argument\n", task_call->str.c_str());
+				return false;
+			} else {
+				return true;
+			}
+		} else if (task_call->str == "$masm_stop" || task_call->str == "$masm_abort") {
+
+			if (GetSize(task_call->children) != 0) {
+				// check that the first argument is the fmt
+				log_error("Invalid number of arguments in %s at %s\n", task_call->str.c_str(), task_call->loc_string().c_str());
+				return false;
+			} else {
+				return true;
+			}
+		} else {
+			log_error("Unhandled masm task %s\n", task_call->str.c_str());
+			return false;
+		}
+	}
+
 	AstNode *m_design;
 	AstNode *m_mutable_design;
 	Stack m_conditions;
@@ -90,7 +123,7 @@ class HoistExpectTasks
 	// we can not directly add new nodes to the module because we perform the transformation
 	// depth-first, therefore, internal nodes should not modify their parent to avoid invalidating
 	// children iterators.
-
+	// std::vector<AstNode *> m_new_blackboxes;
 	bool m_is_transformed;
 	mutable int m_fresh_index;
 };

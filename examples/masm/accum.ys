@@ -1,5 +1,6 @@
-read_verilog -sv  examples/masm/accum.sv;
+read_verilog -sv  -noblackbox examples/masm/accum.sv;
 proc;
 opt_clean;
+hierarchy -top Tester -check
 write_verilog examples/masm/out/accum.out.sv;
 write_rtlil examples/masm/out/accum.out.rtlil;

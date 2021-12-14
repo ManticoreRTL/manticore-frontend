@@ -21,11 +21,12 @@ module Accum (
 endmodule
 
 
-module Tester(input wire __clock__);
+module Tester(input wire __clock__, output wire [31:0] acc_out);
 
 
   logic reset;
   wire [31:0] acc;
+  wire [31:0] acc_out;
   logic [31:0] cycle = 0;
   localparam CYCLES = 256;
   logic [4:0] reset_cycles = 3;
@@ -41,6 +42,11 @@ module Tester(input wire __clock__);
     //   values[ix] = ix + 1;
     //   gold[ix + 1] = values[ix] + gold[ix - 1];
     // end
+    ix = 0;
+    for (ix = 0; ix < 10; ix = ix + 1) begin
+      assert(gold[ix] < acc);
+    end
+
   end
 
 
@@ -57,7 +63,9 @@ module Tester(input wire __clock__);
     if (reset != 1) begin
       cycle <= cycle + 1;
       if (cycle < CYCLES) begin
-        $masm_expect(acc == gold[cycle], "Expected %d but got %d", gold[cycle], acc);
+        $masm_expect(acc == gold[cycle], "invalid acc");
+      end else begin
+        // $masm_stop;
       end
     end
   end
@@ -69,11 +77,20 @@ module Tester(input wire __clock__);
     .reset(reset),
     .out(acc)
   );
+  // (* blackbox = 1 *)
+  BB fsd(
+    .cond(acc == gold[cycle]),
+    .in(acc),
+    .out(acc_out)
+  );
   // always_ff
     // $masm_expect(val < 10);
 
-
 endmodule
+
+module BB (input wire cond, input wire in, output wire[31:0] out);
+endmodule
+
 
 
 

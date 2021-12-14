@@ -2735,6 +2735,7 @@ behavioral_stmt:
 		ast_stack.back()->children.push_back(node);
 		ast_stack.push_back(node);
 		append_attr(node, $1);
+		SET_AST_NODE_LOC(node, @2, @2);
 	} opt_arg_list ';'{
 		ast_stack.pop_back();
 	} |

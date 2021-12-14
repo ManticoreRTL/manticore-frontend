@@ -1,4 +1,5 @@
 #include "masm_expect.h"
+
 namespace masm_frontend
 {
 
@@ -33,9 +34,11 @@ void HoistExpectTasks::transformNode(AstNode *mutable_ast)
 		DISPATCH_CALL(AST_MODULE)
 		DISPATCH_CALL(AST_ALWAYS)
 		DISPATCH_CALL(AST_BLOCK)
-		// DISPATCH_CALL(AST_WHILE)
-		// DISPATCH_CALL(AST_FOR)
+		DISPATCH_CALL(AST_WHILE)
+		DISPATCH_CALL(AST_FOR)
+		DISPATCH_CALL(AST_REPEAT)
 		DISPATCH_CALL(AST_CASE)
+		DISPATCH_CALL(AST_DESIGN)
 	default:
 		__transform_FALLBACK(mutable_ast);
 		break;
@@ -51,20 +54,74 @@ void HoistExpectTasks::transformNode(AstNode *mutable_ast)
  * method on each child
  *
  */
-DISPATCH_DEF(FALLBACK, node)
-{
-	// for(auto& child : node->children) {
-	//     transformNode(child);
-	// }
+DISPATCH_DEF(FALLBACK, node) { TRANSFORM_CHILDREN(node); }
 
+DISPATCH_DEF(AST_DESIGN, design)
+{
+
+	TRANSFORM_CHILDREN(design);
+
+	const auto masm_syscall_module_name = getMasmPrivilagedModuleName();
+	auto create_module_param = [](const std::string &name, AstNode *expr) -> AstNode * {
+		AstNode *mod_param = new AstNode(AST::AST_PARAMETER, expr);
+		mod_param->str = name;
+		return mod_param;
+	};
+
+	auto create_io_wire = [](const std::string &name, bool is_input) -> AstNode * {
+		AstNode *range = new AstNode(AST::AST_RANGE,
+			AstNode::mkconst_int(0, false),
+			AstNode::mkconst_int(0, false));
+		range->is_signed = false;
+		AstNode *input_wire = new AstNode(AST::AST_WIRE, range);
+		input_wire->is_input = is_input;
+		input_wire->is_output = !is_input;
+		input_wire->str = name;
+		return input_wire;
+	};
+	AstNode *module_def = new AstNode(AST::AST_MODULE,
+		 create_module_param("\\msg", AstNode::mkconst_str("<EXPECT_FAILED>")),
+		 create_module_param("\\mode", AstNode::mkconst_str("<UNDEF>")),
+		 create_io_wire("\\cond", true),
+		 create_io_wire("\\cond_out", false)
+	);
+	module_def->attributes.insert(
+		std::make_pair(ID::blackbox, AstNode::mkconst_int(1, false))
+	);
+	module_def->attributes.insert(
+		std::make_pair(ID::blackbox, AstNode::mkconst_int(1, false))
+	);
+	module_def->str = "\\$MASM_PRIVILAGED";
+	design->children.push_back(module_def);
+
+}
+
+DISPATCH_DEF(AST_WHILE, node)
+{
+	m_while_loop.push(node);
 	TRANSFORM_CHILDREN(node);
+	m_while_loop.pop();
+}
+
+DISPATCH_DEF(AST_FOR, node)
+{
+	m_for_loop.push(node);
+	TRANSFORM_CHILDREN(node);
+	m_for_loop.pop();
+}
+
+DISPATCH_DEF(AST_REPEAT, node)
+{
+	m_repeat.push(node);
+	TRANSFORM_CHILDREN(node);
+	m_repeat.pop();
 }
 
 DISPATCH_DEF(AST_TCALL, task_call)
 {
 
-	if (task_call->str == "$masm_expect") {
-		log_error("Did not expect $masm_expect!");
+	if (task_call->str == "$masm_expect" || task_call->str == "$masm_abort" || task_call->str == "$masm_stop") {
+		log_error("Did not expect %s at %s\n!", task_call->str.c_str(), task_call->loc_string().c_str());
 	} else {
 		TRANSFORM_CHILDREN(task_call);
 	}
@@ -114,10 +171,6 @@ DISPATCH_DEF(AST_ALWAYS, always_node)
 		m_current_clock.pop();
 	}
 }
-
-DISPATCH_DEF(AST_WHILE, no_warn_unused while_node) {}
-
-DISPATCH_DEF(AST_FOR, no_warn_unused for_node) {}
 
 // TODO handle AST_CASEZ and AST_CASEX
 DISPATCH_DEF(AST_CASE, switch_node)
@@ -209,15 +262,12 @@ DISPATCH_DEF(AST_BLOCK, block)
 				log_abort();
 			}
 
-
+			if (isValidTaskSignature(child) == false) {
+				log_abort();
+			}
 
 			AstNode *expect_task_call = child;
 
-			// set the cell arguments as .fmt(..), .varg0(..), .varg1(..)
-			if (GetSize(expect_task_call->children) == 0) {
-				log_error("Expect with no condition!");
-				log_abort();
-			}
 			// create a reg for the condition and add it to the enclosing module
 			AstNode *condition_reg = new AstNode(AST::AST_WIRE);
 			condition_reg->str = freshName("reg_cond", child);
@@ -226,9 +276,20 @@ DISPATCH_DEF(AST_BLOCK, block)
 			// m_module.top()->children.push_back(condition_reg);
 
 			// now construct an always block to set the condition value
-			m_conditions.push(expect_task_call->children[0]);
-			AstNode *conjunction_expr = conjunction(m_conditions);
-			m_conditions.pop();
+			auto make_conjunction = [this](Stack &nested_conditions, AstNode *task_call) -> AstNode * {
+				AstNode *conj = nullptr;
+				if (task_call->str == "$masm_expect") {
+					nested_conditions.push(task_call->children[0]);
+					conj = this->conjunction(nested_conditions);
+					nested_conditions.pop();
+				} else if (task_call->str == "$masm_stop" || task_call->str == "$masm_abort") {
+					conj = this->conjunction(nested_conditions);
+				}
+				return conj;
+			};
+
+			AstNode *conjunction_expr = make_conjunction(m_conditions, expect_task_call);
+			log_assert(conjunction_expr != nullptr);
 			AstNode *lvalue = new AstNode(AST::AST_IDENTIFIER);
 			lvalue->str = condition_reg->str;
 			AstNode *cond_always = new AstNode(AST::AST_ALWAYS, m_current_clock.top()->clone(),
@@ -239,38 +300,35 @@ DISPATCH_DEF(AST_BLOCK, block)
 			// this is because we are mutating the AST in place :(
 			m_new_nodes.push_back(cond_always);
 
-			// Also create an output to prevent the cell deletion by opt_clean
-			AstNode *condition_out = new AstNode(AST::AST_WIRE);
-			condition_out->str = freshName("cont_out", child);
-			condition_out->is_output = true;
-			AstNode *cond_out_assign = new AstNode(AST::AST_ASSIGN, new AstNode(AST::AST_IDENTIFIER), lvalue->clone());
-			cond_out_assign->children.front()->str = condition_out->str;
-			m_new_nodes.push_back(condition_out);
-			m_new_nodes.push_back(cond_out_assign);
-
 			// cell instantiation
 			const auto instance_name = freshName("instance", child);
-			const auto module_name = freshName("MASM_PRIVILAGED", child);
+			const auto module_name = getMasmPrivilagedModuleName();
+			// create a cell instant
 			AstNode *expect_cell = new AstNode(AST::AST_CELL, new AstNode(AST::AST_CELLTYPE));
+
+
 			expect_cell->str = instance_name;
 			// set the cell/black box type to be a fresh black box name
 			expect_cell->children[0]->str = module_name;
 
+
+			auto create_param_set = [](const std::string &name, AstNode *expr) -> AstNode * {
+				AstNode *parset = new AstNode(AST::AST_PARASET, expr);
+				parset->str = name;
+				return parset;
+			};
+
 			// add a parameter to hold the format string (if exists)
-			if (GetSize(expect_task_call->children) > 1) {
-				// first set the fmt parameter of the expect cell
-				AstNode *format_param = new AstNode(AST::AST_PARASET);
-				format_param->str = "\\fmt";
+			if (expect_task_call->str == "$masm_expect" && GetSize(expect_task_call->children) > 1) {
+				// Set the msg parameter of the expect cell
+				const std::string param_name = "\\msg";
 				AstNode *format_expr = expect_task_call->children[1];
-				format_param->children.push_back(format_expr->clone());
-				expect_cell->children.push_back(format_param);
+				expect_cell->children.push_back(create_param_set("\\msg", format_expr->clone()));
+
 			}
-			{
-				AstNode *mode_param = new AstNode(AST::AST_PARASET);
-				mode_param->str = "\\mode";
-				mode_param->children.push_back(expect_task_call->mkconst_str(expect_task_call->str));
-				expect_cell->children.push_back(mode_param);
-			}
+			// set the mode parameter, indicating the type of privilaged call
+			expect_cell->children.push_back(create_param_set("\\mode", AstNode::mkconst_str(expect_task_call->str)));
+
 			// keep the source location
 			expect_cell->location = expect_task_call->location;
 			expect_cell->filename = expect_task_call->filename;
@@ -281,17 +339,21 @@ DISPATCH_DEF(AST_BLOCK, block)
 			condition_connection->str = "\\cond";
 			expect_cell->children.push_back(condition_connection);
 
-			// now handle variable arguments for the fmt as inputs to the cell
-			for (int varg_ix = 2; varg_ix < GetSize(expect_task_call->children); varg_ix++) {
-
-				AstNode *varg_expr = expect_task_call->children[varg_ix];
-				log("expect varg%d = %s\n", varg_ix - 2, varg_expr->str.c_str());
-				AstNode *varg_param = new AstNode(AST::AST_ARGUMENT, varg_expr->clone());
-				varg_param->str = stringf("\\varg%d", varg_ix - 2);
-				expect_cell->children.push_back(varg_param);
+			// Also create an output to prevent the cell deletion by opt_clean
+			{
+				AstNode *condition_out = new AstNode(AST::AST_WIRE);
+				condition_out->str = freshName("cond_out", child);
+				condition_out->is_output = true;
+				AstNode *condition_out_id = new AstNode(AST::AST_IDENTIFIER);
+				condition_out_id->str = condition_out->str;
+				AstNode *cond_out_arg = new AstNode(AST::AST_ARGUMENT, condition_out_id);
+				cond_out_arg->str = "\\cond_out";
+				expect_cell->children.push_back(cond_out_arg->clone());
+				m_new_nodes.push_back(condition_out);
+				// ensure the optimizer won't remove this
+				expect_cell->attributes.insert(std::make_pair(ID::keep, AstNode::mkconst_int(1, false)));
 			}
-			// finally add the cell to the module, this is safe since
-			// we are not going to visit cell...
+
 			m_new_nodes.push_back(expect_cell);
 			// delete this node, no longer needed
 			// AstNode*
