@@ -21,14 +21,13 @@ class HoistExpectTasks
 		m_design = design;
 		m_mutable_design = design->clone();
 		m_is_transformed = false;
+		m_add_masm_privilaged = false;
 		m_fresh_index = 0;
 	}
 
 	AstNode *transformed();
 
-	static std::string getMasmPrivilagedModuleName() {
-		return "\\$MASM_PRIVILAGED";
-	}
+
 
       private:
 #define DEFINE_DISPATH_METHOD(ast_type) void __transform
@@ -124,22 +123,13 @@ class HoistExpectTasks
 	// depth-first, therefore, internal nodes should not modify their parent to avoid invalidating
 	// children iterators.
 	// std::vector<AstNode *> m_new_blackboxes;
+	bool m_add_masm_privilaged;
+	std::unordered_set<std::string> m_defined_modules;
+
+	std::string m_masm_privilaged_name;
 	bool m_is_transformed;
 	mutable int m_fresh_index;
 };
 
-void hoistExpect(AST::AstNode *node);
-
-void hoistExpectFromModule(AST::AstNode *module);
-
-AST::AstNode *hoistExpectFromAlways(AST::AstNode *always, AST::AstNode *module);
-
-AST::AstNode *transformClockedAlways(AST::AstNode *always, AST::AstNode *enclosing_module);
-
-AST::AstNode *hoistExpectFromClockedBlock(AST::AstNode *block, AST::AstNode *enclosing_module, const std::vector<AST::AstNode *> &conditions,
-					  const std::vector<AST::AstNode *> &enclosing_for, const std::vector<AST::AstNode *> &enclosing_while);
-
-AST::AstNode *hoistExpectFromCaseStatement(AST::AstNode *case_stmt, AST::AstNode *enclosing_module, const std::vector<AST::AstNode *> &conditions,
-					   const std::vector<AST::AstNode *> &enclosing_for, const std::vector<AST::AstNode *> &enclosing_while);
 
 }; // namespace masm_frontend

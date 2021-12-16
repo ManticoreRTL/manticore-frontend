@@ -59,41 +59,43 @@ DISPATCH_DEF(FALLBACK, node) { TRANSFORM_CHILDREN(node); }
 DISPATCH_DEF(AST_DESIGN, design)
 {
 
+	int name_index = 0;
+	for (const auto &child : design->children) {
+		if (child->type == AST::AST_MODULE)
+			if (child->str == "\\MASM_PRIVILAGED") {
+				log_warning("Please avoid using MASM_PRIVILAGED as a module name");
+				name_index += 1;
+			}
+	}
+
+	m_masm_privilaged_name = stringf("\\MASM_PRIVILAGED_%d", name_index);
+	log_assert(m_defined_modules.empty());
 	TRANSFORM_CHILDREN(design);
 
-	const auto masm_syscall_module_name = getMasmPrivilagedModuleName();
-	auto create_module_param = [](const std::string &name, AstNode *expr) -> AstNode * {
-		AstNode *mod_param = new AstNode(AST::AST_PARAMETER, expr);
-		mod_param->str = name;
-		return mod_param;
-	};
+	if (m_add_masm_privilaged) {
+		auto create_module_param = [](const std::string &name, AstNode *expr) -> AstNode * {
+			AstNode *mod_param = new AstNode(AST::AST_PARAMETER, expr);
+			mod_param->str = name;
+			return mod_param;
+		};
 
-	auto create_io_wire = [](const std::string &name, bool is_input) -> AstNode * {
-		AstNode *range = new AstNode(AST::AST_RANGE,
-			AstNode::mkconst_int(0, false),
-			AstNode::mkconst_int(0, false));
-		range->is_signed = false;
-		AstNode *input_wire = new AstNode(AST::AST_WIRE, range);
-		input_wire->is_input = is_input;
-		input_wire->is_output = !is_input;
-		input_wire->str = name;
-		return input_wire;
-	};
-	AstNode *module_def = new AstNode(AST::AST_MODULE,
-		 create_module_param("\\msg", AstNode::mkconst_str("<EXPECT_FAILED>")),
-		 create_module_param("\\mode", AstNode::mkconst_str("<UNDEF>")),
-		 create_io_wire("\\cond", true),
-		 create_io_wire("\\cond_out", false)
-	);
-	module_def->attributes.insert(
-		std::make_pair(ID::blackbox, AstNode::mkconst_int(1, false))
-	);
-	module_def->attributes.insert(
-		std::make_pair(ID::blackbox, AstNode::mkconst_int(1, false))
-	);
-	module_def->str = "\\$MASM_PRIVILAGED";
-	design->children.push_back(module_def);
-
+		auto create_io_wire = [](const std::string &name, bool is_input) -> AstNode * {
+			AstNode *range = new AstNode(AST::AST_RANGE, AstNode::mkconst_int(0, false), AstNode::mkconst_int(0, false));
+			range->is_signed = false;
+			AstNode *input_wire = new AstNode(AST::AST_WIRE, range);
+			input_wire->is_input = is_input;
+			input_wire->is_output = !is_input;
+			input_wire->str = name;
+			return input_wire;
+		};
+		AstNode *module_def = new AstNode(AST::AST_MODULE, create_module_param("\\msg", AstNode::mkconst_str("<EXPECT_FAILED>")),
+						  create_module_param("\\mode", AstNode::mkconst_str("<UNDEF>")), create_io_wire("\\cond", true),
+						  create_io_wire("\\cond_out", false));
+		module_def->attributes.insert(std::make_pair(ID::blackbox, AstNode::mkconst_int(1, false)));
+		module_def->attributes.insert(std::make_pair(ID::MASM_PRIVILAGED, AstNode::mkconst_int(1, false)));
+		module_def->str = m_masm_privilaged_name;
+		design->children.push_back(module_def);
+	}
 }
 
 DISPATCH_DEF(AST_WHILE, node)
@@ -134,6 +136,8 @@ DISPATCH_DEF(AST_MODULE, module)
 	log_assert(m_module.empty());
 	log_assert(m_new_nodes.empty());
 	m_module.push(module);
+	log("Handling module %s\n", module->str.c_str());
+	m_defined_modules.insert(module->str);
 	// set the current module scope
 	for (auto &child : module->children) {
 		transformNode(child);
@@ -302,15 +306,13 @@ DISPATCH_DEF(AST_BLOCK, block)
 
 			// cell instantiation
 			const auto instance_name = freshName("instance", child);
-			const auto module_name = getMasmPrivilagedModuleName();
+			const auto module_name = m_masm_privilaged_name;
 			// create a cell instant
 			AstNode *expect_cell = new AstNode(AST::AST_CELL, new AstNode(AST::AST_CELLTYPE));
-
 
 			expect_cell->str = instance_name;
 			// set the cell/black box type to be a fresh black box name
 			expect_cell->children[0]->str = module_name;
-
 
 			auto create_param_set = [](const std::string &name, AstNode *expr) -> AstNode * {
 				AstNode *parset = new AstNode(AST::AST_PARASET, expr);
@@ -324,7 +326,6 @@ DISPATCH_DEF(AST_BLOCK, block)
 				const std::string param_name = "\\msg";
 				AstNode *format_expr = expect_task_call->children[1];
 				expect_cell->children.push_back(create_param_set("\\msg", format_expr->clone()));
-
 			}
 			// set the mode parameter, indicating the type of privilaged call
 			expect_cell->children.push_back(create_param_set("\\mode", AstNode::mkconst_str(expect_task_call->str)));
@@ -357,6 +358,7 @@ DISPATCH_DEF(AST_BLOCK, block)
 			m_new_nodes.push_back(expect_cell);
 			// delete this node, no longer needed
 			// AstNode*
+			m_add_masm_privilaged = true; // notify the design to add the MASM_PRIVILAGED blackbox
 			delete child;
 		} else {
 			transformNode(child);
