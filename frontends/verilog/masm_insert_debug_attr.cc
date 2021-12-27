@@ -15,12 +15,7 @@ AST::AstNode* MasmInsertDebugAttributes::transformed() {
 
 void MasmInsertDebugAttributes::transformNode(AstNode* node) {
 
-    if (node->type == AST::AST_WIRE && (node->is_reg || node->is_logic || node->is_input || node->is_output)) {
-
-        node->attributes.insert(
-            std::make_pair(ID::MASM_DEBUG_SYMBOL, AstNode::mkconst_str(node->str))
-        );
-    } else if (node->type == AST::AST_CELL) {
+    if (node->type == AST::AST_WIRE || node->type == AST::AST_MEMORY || node->type == AST::AST_CELL) {
         node->attributes.insert(
             std::make_pair(ID::MASM_DEBUG_SYMBOL, AstNode::mkconst_str(node->str))
         );
