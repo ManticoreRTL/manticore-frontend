@@ -182,7 +182,7 @@ DISPATCH_DEF(AST_CASE, switch_node)
 
 	auto switch_cond_expr = switch_node->children[0];
 
-	std::vector<AstNode *> non_default_labels;
+	std::vector<AstNode *> non_default_conds;
 	for (auto &case_cond : switch_node->children) {
 		if (case_cond->type == AST::AST_COND) {
 			// go through all non-default cases and
@@ -196,9 +196,9 @@ DISPATCH_DEF(AST_CASE, switch_node)
 				transformNode(case_cond);
 				auto top = m_conditions.top();
 				log_assert(top == cond_expr);
-				delete cond_expr;
 				m_conditions.pop();
-				non_default_labels.push_back(case_label);
+				non_default_conds.push_back(cond_expr);
+				// delete cond_expr;
 			}
 		}
 	}
@@ -213,8 +213,8 @@ DISPATCH_DEF(AST_CASE, switch_node)
 			if (case_label->type == AST::AST_DEFAULT) {
 
 				Stack negated_labels;
-				for (const auto &label : non_default_labels) {
-					auto negated = new AstNode(AST::AST_LOGIC_NOT, label->clone());
+				for (const auto &non_default : non_default_conds) {
+					auto negated = new AstNode(AST::AST_LOGIC_NOT, non_default->clone());
 					negated_labels.push(negated);
 				}
 
@@ -228,6 +228,10 @@ DISPATCH_DEF(AST_CASE, switch_node)
 				}
 			}
 		}
+	}
+
+	for (auto *c : non_default_conds) {
+		delete c;
 	}
 }
 
@@ -276,28 +280,49 @@ DISPATCH_DEF(AST_BLOCK, block)
 			AstNode *condition_reg = new AstNode(AST::AST_WIRE);
 			condition_reg->str = freshName("reg_cond", child);
 			condition_reg->is_reg = true;
+			AstNode *condition_id = new AstNode(AST::AST_IDENTIFIER);
+			condition_id->str = condition_reg->str;
+			AstNode *condition_init =
+			  new AstNode(AST::AST_INITIAL,
+				      new AstNode(AST::AST_BLOCK, new AstNode(AST::AST_ASSIGN_EQ, condition_id, AstNode::mkconst_int(1, false, 1))));
+
 			m_new_nodes.push_back(condition_reg);
+			m_new_nodes.push_back(condition_init);
 			// m_module.top()->children.push_back(condition_reg);
 
 			// now construct an always block to set the condition value
-			auto make_conjunction = [this](Stack &nested_conditions, AstNode *task_call) -> AstNode * {
-				AstNode *conj = nullptr;
+			auto make_implication = [this](Stack &nested_conditions, AstNode *task_call) -> AstNode * {
+				AstNode *impl = nullptr;
+				AstNode *q = nullptr;
+				// a $masm_expect nested inside if-else statement can be viewed
+				// as another one in th outer-most scope with condition p -> q
+				// where p is the conjunction of nested conditions and q is the
+				// local task call condition.
 				if (task_call->str == "$masm_expect") {
-					nested_conditions.push(task_call->children[0]);
-					conj = this->conjunction(nested_conditions);
-					nested_conditions.pop();
+					// q is the argument to $masm_expect
+					q = task_call->children[0]->clone();
 				} else if (task_call->str == "$masm_stop" || task_call->str == "$masm_abort") {
-					conj = this->conjunction(nested_conditions);
+					// stop or abort are like expect(false, "msg")
+					q = AstNode::mkconst_int(0, false, 1);
 				}
-				return conj;
+				if (GetSize(nested_conditions) > 0) {
+					// create conjunction
+					AstNode *p = this->conjunction(nested_conditions);
+					AstNode *not_p = new AST::AstNode(AST::AST_LOGIC_NOT, p);
+					AstNode *cond = new AST::AstNode(AST::AST_LOGIC_OR, not_p, q);
+					impl = cond;
+				} else {
+					impl = q;
+				}
+				return impl;
 			};
 
-			AstNode *conjunction_expr = make_conjunction(m_conditions, expect_task_call);
-			log_assert(conjunction_expr != nullptr);
+			AstNode *implication_expr = make_implication(m_conditions, expect_task_call);
+			log_assert(implication_expr != nullptr);
 			AstNode *lvalue = new AstNode(AST::AST_IDENTIFIER);
 			lvalue->str = condition_reg->str;
 			AstNode *cond_always = new AstNode(AST::AST_ALWAYS, m_current_clock.top()->clone(),
-							   new AstNode(AST::AST_BLOCK, new AstNode(AST::AST_ASSIGN_LE, lvalue, conjunction_expr)));
+							   new AstNode(AST::AST_BLOCK, new AstNode(AST::AST_ASSIGN_LE, lvalue, implication_expr)));
 			// TODO: do we need an initial condition value?
 			// Do not directly add it to the enclosing module, because we
 			// may still have other always blocks that are not visited
