@@ -1,0 +1,5 @@
+read_verilog -sv  -noblackbox examples/masm/counter.sv;
+proc;
+hierarchy -top Counter -check
+write_verilog examples/masm/out/counter.out.sv;
+write_rtlil examples/masm/out/counter.out.rtlil;

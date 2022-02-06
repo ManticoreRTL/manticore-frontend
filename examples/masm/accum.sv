@@ -21,7 +21,7 @@ module Accum (
 endmodule
 
 
-module Tester(input wire __clock__, output wire [31:0] acc_out);
+module Tester(input wire __clock__);
 
 
   logic reset;
@@ -31,21 +31,20 @@ module Tester(input wire __clock__, output wire [31:0] acc_out);
   localparam CYCLES = 256;
   logic [4:0] reset_cycles = 3;
   logic [31:0] values [CYCLES - 1 : 0];
+  logic [31:0] computed [CYCLES : 0];
   logic [31:0] gold [CYCLES : 0];
   integer ix;
 
   initial begin
 
     $readmemh("inputs.dat", values);
+    values[1] = 2;
+    values[2] = 3;
+    values[3] = 4;
+    values[255] = 243;
+    values[3] = 5;
     $readmemh("gold_out.dat", gold);
-    // for (ix = 0; ix < 16; ix = ix + 1) begin
-    //   values[ix] = ix + 1;
-    //   gold[ix + 1] = values[ix] + gold[ix - 1];
-    // end
-    ix = 0;
-    for (ix = 0; ix < 10; ix = ix + 1) begin
-      assert(gold[ix] < acc);
-    end
+
 
   end
 
@@ -63,6 +62,7 @@ module Tester(input wire __clock__, output wire [31:0] acc_out);
     if (reset != 1) begin
       cycle <= cycle + 1;
       if (cycle < CYCLES) begin
+        computed[cycle] <= acc;
         $masm_expect(acc == gold[cycle], "invalid acc");
       end else begin
         // $masm_stop;
@@ -77,14 +77,7 @@ module Tester(input wire __clock__, output wire [31:0] acc_out);
     .reset(reset),
     .out(acc)
   );
-  // (* blackbox = 1 *)
-  BB fsd(
-    .cond(acc == gold[cycle]),
-    .in(acc),
-    .out(acc_out)
-  );
-  // always_ff
-    // $masm_expect(val < 10);
+
 
 endmodule
 

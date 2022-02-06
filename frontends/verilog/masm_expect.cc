@@ -274,9 +274,9 @@ DISPATCH_DEF(AST_BLOCK, block)
 				log_abort();
 			}
 
+
 			AstNode *expect_task_call = child;
 
-			// create a reg for the condition and add it to the enclosing module
 			AstNode *condition_reg = new AstNode(AST::AST_WIRE);
 			condition_reg->str = freshName("reg_cond", child);
 			condition_reg->is_reg = true;
@@ -305,6 +305,8 @@ DISPATCH_DEF(AST_BLOCK, block)
 					// stop or abort are like expect(false, "msg")
 					q = AstNode::mkconst_int(0, false, 1);
 				}
+
+				log_assert(q != nullptr);
 				if (GetSize(nested_conditions) > 0) {
 					// create conjunction
 					AstNode *p = this->conjunction(nested_conditions);
