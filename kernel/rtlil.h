@@ -698,6 +698,9 @@ struct RTLIL::AttrObject
 	void set_bool_attribute(RTLIL::IdString id, bool value=true);
 	bool get_bool_attribute(RTLIL::IdString id) const;
 
+	void set_const_attribute(RTLIL::IdString id, const RTLIL::Const& v);
+	RTLIL::Const get_const_attribute(RTLIL::IdString id) const;
+
 	bool get_blackbox_attribute(bool ignore_wb=false) const {
 		return get_bool_attribute(ID::blackbox) || (!ignore_wb && get_bool_attribute(ID::whitebox));
 	}

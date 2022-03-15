@@ -436,6 +436,23 @@ string RTLIL::AttrObject::get_string_attribute(RTLIL::IdString id) const
 	return value;
 }
 
+void RTLIL::AttrObject::set_const_attribute(RTLIL::IdString id, const RTLIL::Const& value)
+{
+	if (value.empty())
+		attributes.erase(id);
+	else
+		attributes[id] = value;
+}
+
+RTLIL::Const RTLIL::AttrObject::get_const_attribute(RTLIL::IdString id) const
+{
+	RTLIL::Const v;
+	const auto it = attributes.find(id);
+	if (it != attributes.end())
+		v =  it->second;
+    return v;
+}
+
 void RTLIL::AttrObject::set_strpool_attribute(RTLIL::IdString id, const pool<string> &data)
 {
 	string attrval;
