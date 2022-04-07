@@ -662,6 +662,8 @@ OBJS += passes/cmds/cover.o
 OBJS += passes/cmds/design.o
 OBJS += passes/cmds/plugin.o
 
+include $(YOSYS_SRC)/passes/manticore/Makefile.inc
+
 include $(YOSYS_SRC)/passes/proc/Makefile.inc
 include $(YOSYS_SRC)/passes/opt/Makefile.inc
 include $(YOSYS_SRC)/passes/techmap/Makefile.inc
