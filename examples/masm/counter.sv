@@ -11,12 +11,16 @@ module Counter(
 
     always @(posedge __clock__) begin
         if (counter < TEST_SIZE) begin
-            $masm_expect(counter == expected_values[counter], "invalid counter");
+            // assert(counter == expected_values[counter]);
             counter <= counter + 1;
         end else begin
-            $masm_stop;
+            // $stop;
         end
 
+    end
+
+    always_comb begin
+        assert(counter == expected_values[counter]);
     end
 
 endmodule
