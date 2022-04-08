@@ -72,27 +72,7 @@ struct ModuleTransformer {
 		bool empty() const { return cell == nullptr; }
 		bool nonEmpty() const { return cell != nullptr; }
 	};
-	// template <typename T> struct Optional {
-	//       private:
-	// 	const T m_value;
-	// 	const bool m_vld;
 
-	//       public:
-	// 	Optional(const T v) : m_value(v), m_vld(true) {}
-	// 	Optional() : m_value(), m_vld(false) {}
-	// 	Optional(const Optional& other) : m_value(other.m_value), m_vld(other.m_vld) {}
-
-	// 	const T &get() const
-	// 	{
-	// 		if (m_vld) {
-	// 			return m_value;
-	// 		} else {
-	// 			throw std::runtime_error("empty optional!");
-	// 		}
-	// 	}
-	// 	bool empty() const { return !m_vld; }
-	// 	bool nonEmpty() const { return m_vld; }
-	// };
 
 	Driver getDriver(const SigBit &bit) const
 	{
@@ -168,6 +148,14 @@ struct ModuleTransformer {
 		return mux_conditions;
 	}
 
+	/**
+	 * @brief Walk along the write-enable conditions over MUX nodes and
+	 * get the original SigBit that can be used as the write data bit
+	 *
+	 * @param conditions
+	 * @param data_bit
+	 * @return SigBit
+	 */
 	SigBit walkWriteDataAlongWriteEnableConditions(const std::vector<SigBit> &conditions, const SigBit &data_bit) const
 	{
 
@@ -213,6 +201,13 @@ struct ModuleTransformer {
 		// note that the number of bits in t
 		return current_data_bit;
 	}
+	/**
+	 * @brief Checks whether all the bits in the SigSpec are the same
+	 *
+	 * @param sig
+	 * @return true
+	 * @return false
+	 */
 	bool isFullBitRepeat(const SigSpec &sig) const
 	{
 
@@ -292,8 +287,7 @@ struct ModuleTransformer {
 			return res_sig;
 		}
 	}
-	template<typename ConstIter>
-	SigSpec createAndTree(const SigSpec &in, const ConstIter beg, const ConstIter end)
+	template <typename ConstIter> SigSpec createAndTree(const SigSpec &in, const ConstIter beg, const ConstIter end)
 	{
 		if (beg == end) {
 			return in;
@@ -307,6 +301,35 @@ struct ModuleTransformer {
 			return createAndTree(next_in, beg + 1, end);
 		}
 	}
+	/**
+	 * @brief Transforms memory write port
+	 * This method handles two cases with a memory write port
+	 * 1. A memory write port with identical repeated bits on the EN port:
+	 * 		This indicates a conditional, yet full width memory write. We can
+	 *      slightly optimize the data path of this write by walking along the
+	 *      MUX tree that makes up the write EN and collecting the select bits
+	 *      of these muxes. Then we use the collected conditions to walk the
+	 *      DATA signal back to the bits that make them, removing the redundant
+	 *      multiplexer on the way and directly connecting the bits to the DATA
+	 *      port.
+	 * 2. A memory write port with multiple repeated bits sequences, i.e.,
+	 * 		EN <- b0, b0, b0, b1, b1, b1, 0, 0, 1, 1, 1, 1
+	 * 		In this case for each sequence of bits, we perform the same operation
+	 *      as in case 1, that is, we walk the conditions and then walk the data
+	 *      path to collect the bits that are supposed to be written when the
+	 *		EN bit is valid. We then use these conditions to multiplex  new values
+	 *      (resulting from our walk) and old values (getting it from a memrd_v2 cell
+	 *      sharing the address as the current memwr_v2 cell). Then we set the
+	 *      EN signal to all ones. By doing this, we essentially create a
+	 * 		a read-modify-write sequence and remove the write-enable (setting to always true).
+	 *      Note that without doing so, we will not be able to generate code
+	 *      for Manticore-compiler since in the assembly code there is only a
+	 *      a word-enable bit, whereas Yosys exposes bit-enable bits! This streamlines
+	 *      code generation since any memwr_v2 cell is now guaranteed to have the
+	 *      the first EN port bit repeated to the rest of them so the code generator
+	 *      code simply take EN bit 0 as the STORE predicate.
+	 * @param cell a $memwr_v2 cell
+	 */
 	void transformMemoryWrite(Cell *cell)
 	{
 
@@ -321,8 +344,19 @@ struct ModuleTransformer {
 		// analyze the enable bit
 		auto en_sig = cell->getPort(ID::EN);
 		if (en_sig.is_fully_zero()) {
-			log_warning("Removing unused memory write node %s\n", RTLIL::id2cstr(cell->name));
-			dead_cells.push_back(cell);
+			log_warning("Unused memory write node %s\n", RTLIL::id2cstr(cell->name));
+		} else if (!en_sig.is_fully_ones() && isFullBitRepeat(en_sig)) {
+			// memwr performs a full write to the memory, we can optimize this
+			// write by removing MUXes that are driven by the write enable condition
+			auto conditions = walkWriteEnableConditions(en_sig.at(0));
+			log_assert(conditions.empty() == false);
+			auto direct_data_sig = SigSpec();
+			for (const auto &wbit : cell->getPort(ID::DATA)) {
+				auto b = walkWriteDataAlongWriteEnableConditions(conditions, wbit);
+				direct_data_sig.append(b);
+			}
+			cell->setPort(ID::DATA, direct_data_sig);
+
 		} else if (!en_sig.is_fully_ones() && !isFullBitRepeat(en_sig)) {
 			// the enable signal consists of multiple different bits
 			// we need to isolate repeated bit patterns
@@ -398,10 +432,15 @@ struct ModuleTransformer {
 					}
 
 					auto read_bits = getOldBits(en_bit);
-
-					auto resolved_bits = createWriteDataSignal(read_bits, original_bits, conditions);
-
-					full_resolved_write_data_bits.append(resolved_bits);
+					int offset = 0;
+					for (const auto &new_chunk : original_bits.chunks()) {
+						log_debug("Creating WDATA mux for chunk %s[%d +: %d]\n", RTLIL::id2cstr(new_chunk.wire->name),
+							  new_chunk.offset, new_chunk.width);
+						auto resolved_bits =
+						  createWriteDataSignal(read_bits.extract(offset, new_chunk.width), SigSpec(new_chunk), conditions);
+						offset += new_chunk.width;
+						full_resolved_write_data_bits.append(resolved_bits);
+					}
 
 				} else if (isOne(en_bit)) {
 					// we don't need to find the original bits
@@ -486,7 +525,7 @@ struct ModuleTransformer {
 				// and check if there exists a memory read with the
 				// same address
 				auto waddr = wr_cell->getPort(ID::ADDR);
-				auto& rd_cells = memrds[mid];
+				auto &rd_cells = memrds[mid];
 
 				const auto found = std::find_if(rd_cells.begin(), rd_cells.end(), [&waddr, &sigmap](const Cell *rdc) {
 					auto raddr = rdc->getPort(ID::ADDR);
