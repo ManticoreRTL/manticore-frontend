@@ -348,7 +348,7 @@ struct ModuleTransformer {
 		} else if (!en_sig.is_fully_ones() && isFullBitRepeat(en_sig)) {
 			// memwr performs a full write to the memory, we can optimize this
 			// write by removing MUXes that are driven by the write enable condition
-			auto conditions = walkWriteEnableConditions(en_sig.at(0));
+			auto conditions = walkWriteEnableConditions(en_sig[0]);
 			log_assert(conditions.empty() == false);
 			auto direct_data_sig = SigSpec();
 			for (const auto &wbit : cell->getPort(ID::DATA)) {
@@ -356,6 +356,10 @@ struct ModuleTransformer {
 				direct_data_sig.append(b);
 			}
 			cell->setPort(ID::DATA, direct_data_sig);
+			auto wen = createAndTree(SigSpec(conditions.front()), conditions.cbegin() + 1, conditions.cend());
+			std::vector<SigBit> wen_sig(cell->getParam(ID::WIDTH).as_int());
+			std::fill_n(wen_sig.begin(), wen_sig.size(), wen[0]);
+			cell->setPort(ID::EN, SigSpec(wen_sig));
 
 		} else if (!en_sig.is_fully_ones() && !isFullBitRepeat(en_sig)) {
 			// the enable signal consists of multiple different bits

@@ -2793,7 +2793,89 @@ bool AstNode::simplify(bool const_fold, bool at_zero, bool in_lvalue, int stage,
 
 		goto apply_newNode;
 	}
+	// MANTICORE modifications
+	if ((type == AST_MANTICORE_DISPLAY) && current_always && current_always_clocked) {
+
+
+
+		auto freshName = [this](const std::string& name) {
+			std::stringstream sstr;
+			sstr << "$manticore_display$" << filename << ":" << location.first_line << "$" << name << "$" << (autoidx++);
+			return sstr.str();
+		};
+
+		auto createRegister = [&](const std::string& name, int w, bool s) -> AstNode* {
+			AstNode* reg = new AstNode(
+				AST_WIRE,
+				new AstNode(AST_RANGE, mkconst_int(w - 1, s), mkconst_int(0, s))
+			);
+			reg->is_reg = true;
+			reg->str = name;
+			reg->was_checked = true;
+			current_ast_mod->children.push_back(reg);
+			current_scope[reg->str] = reg;
+			reg->filename = filename;
+			reg->location = location;
+			while(reg->simplify(true, false, false, 1, -1, false, false)) {}
+			return reg;
+
+		};
+
+		auto createNonBlockingAssignment = [&](const std::string& name, AstNode* rvalue) -> AstNode *{
+			AstNode* lvalue = new AstNode(AST_IDENTIFIER);
+			lvalue->str = name;
+			lvalue->location = location;
+			lvalue->filename = filename;
+			return new AstNode(AST_ASSIGN_LE, lvalue, rvalue->clone());
+		};
+
+		log_assert(children.size() >= 3);
+		std::vector<AstNode*> var_args (children.cbegin() + 3, children.cend());
+
+		// create a block for non-blocking assignments of the arguments
+		// given to the display node
+		AstNode* assignment_block = new AstNode(
+			AST_BLOCK
+		);
+		AstNode* en_reg = createRegister(freshName("EN"), 1, false);
+		AstNode* en_assign = createNonBlockingAssignment(en_reg->str, children[0]->clone());
+		AstNode* en_init = new AstNode(AST_INITIAL,
+			 new AstNode(AST_BLOCK,
+			 	new AstNode(AST_ASSIGN_EQ, en_assign->children[0]->clone(), mkconst_int(0, false, 1))));
+
+		assignment_block->children.push_back(en_assign);
+		assignment_block->filename = filename;
+		assignment_block->location = location;
+		AstNode* manticore_disp = new AstNode(
+			AST_MANTICORE_DISPLAY,
+			en_assign->children[0]->clone(),
+			children[1]->clone(),
+			children[2]->clone()
+		);
+		manticore_disp->attributes.swap(attributes);
+		manticore_disp->location = location;
+		manticore_disp->filename = filename;
+		for(const auto& va : var_args) {
+			// get the width of the reg
+			int reg_width = -1;
+			bool reg_sign = true;
+			va->detectSignWidth(reg_width, reg_sign);
+			auto va_reg = createRegister(freshName("VARG"), reg_width, reg_sign);
+			auto va_assign = createNonBlockingAssignment(va_reg->str, va->clone());
+			assignment_block->children.push_back(va_assign);
+			// set the argument in the
+			manticore_disp->children.push_back(va_assign->children[0]->clone());
+		}
+		current_ast_mod->children.push_back(manticore_disp);
+		current_ast_mod->children.push_back(en_init);
+		newNode = assignment_block;
+		goto apply_newNode;
+
+	}
+
 skip_dynamic_range_lvalue_expansion:;
+
+
 
 	if (stage > 1 && (type == AST_ASSERT || type == AST_ASSUME || type == AST_LIVE || type == AST_FAIR || type == AST_COVER) && current_block != NULL)
 	{

@@ -513,7 +513,9 @@ struct VerilogFrontend : public Frontend {
 		if (flag_nodpi)
 			error_on_dpi_function(current_ast);
 
+
 		masm_frontend::HoistExpectTasks masm_expect_hoister(current_ast);
+
 
 		auto hoisted = masm_expect_hoister.transformed();
 		masm_frontend::TransformSanitizer checker(current_ast, hoisted);

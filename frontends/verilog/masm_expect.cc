@@ -59,6 +59,7 @@ DISPATCH_DEF(FALLBACK, node) { TRANSFORM_CHILDREN(node); }
 DISPATCH_DEF(AST_DESIGN, design)
 {
 
+	// set_simplify_design_context(design);
 	int name_index = 0;
 	for (const auto &child : design->children) {
 		if (child->type == AST::AST_MODULE)
@@ -245,7 +246,35 @@ DISPATCH_DEF(AST_BLOCK, block)
 		if (child->type == AST::AST_TCALL) {
 			log("Observed AST_TCALL %s\n", child->str.c_str());
 		}
-		if (child->type == AST::AST_TCALL && (child->str == "$masm_expect" || child->str == "$masm_stop" || child->str == "$masm_abort")) {
+		if (child->type == AST::AST_TCALL && child->str == "$display" && m_current_clock.size() == 1) {
+
+			// create a new AstNode represeting this $display with some added information
+			// e.g., $display("my message with %d var args from %s", 2, "Manticore")
+			// becomes $manticore_display(cond, order, "my message with %d var args from %s", 2, "Manticore");
+			// which is later translated to an RTILIL cell in getRTIIL
+
+			AstNode *cond_expr;
+			if (m_conditions.size() == 0) {
+				log_warning("Avoid using $display at every cycle!\n");
+				cond_expr = AstNode::mkconst_int(1, false, 1);
+			} else {
+				cond_expr = conjunction(m_conditions);
+			}
+
+
+			AstNode *manticore_display = new AstNode(AST::AST_MANTICORE_DISPLAY, cond_expr, AstNode::mkconst_int(m_ordering++, false));
+			manticore_display->str = "$manticore_display";
+			for (const auto &grand_child : child->children) {
+				manticore_display->children.push_back(grand_child->clone());
+			}
+			manticore_display->attributes.swap(child->attributes);
+
+			transformed_children.push_back(manticore_display);
+
+			delete child;
+
+		} else if (child->type == AST::AST_TCALL &&
+			   (child->str == "$masm_expect" || child->str == "$masm_stop" || child->str == "$masm_abort")) {
 
 			log("Found masm system call at %s\n", child->loc_string().c_str());
 
@@ -273,7 +302,6 @@ DISPATCH_DEF(AST_BLOCK, block)
 			if (isValidTaskSignature(child) == false) {
 				log_abort();
 			}
-
 
 			AstNode *expect_task_call = child;
 
@@ -380,6 +408,7 @@ DISPATCH_DEF(AST_BLOCK, block)
 				m_new_nodes.push_back(condition_out);
 				// ensure the optimizer won't remove this
 				expect_cell->attributes.insert(std::make_pair(ID::keep, AstNode::mkconst_int(1, false)));
+
 			}
 
 			m_new_nodes.push_back(expect_cell);

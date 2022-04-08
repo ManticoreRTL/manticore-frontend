@@ -23,6 +23,7 @@ class HoistExpectTasks
 		m_is_transformed = false;
 		m_add_masm_privilaged = false;
 		m_fresh_index = 0;
+		m_ordering = 0;
 	}
 
 	AstNode *transformed();
@@ -129,6 +130,7 @@ class HoistExpectTasks
 	std::string m_masm_privilaged_name;
 	bool m_is_transformed;
 	mutable int m_fresh_index;
+	mutable int m_ordering;
 };
 
 
