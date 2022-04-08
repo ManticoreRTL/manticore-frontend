@@ -307,6 +307,10 @@ static int size_packed_struct(AstNode *snode, int base_offset)
 		if (node->type == AST_STRUCT || node->type == AST_UNION) {
 			// embedded struct or union
 			width = size_packed_struct(node, base_offset + offset);
+			// set range of struct
+			node->range_right = base_offset + offset;
+			node->range_left = base_offset + offset + width - 1;
+			node->range_valid = true;
 		}
 		else {
 			log_assert(node->type == AST_STRUCT_ITEM);
@@ -493,13 +497,11 @@ static void add_members_to_scope(AstNode *snode, std::string name)
 	// in case later referenced in assignments
 	log_assert(snode->type==AST_STRUCT || snode->type==AST_UNION);
 	for (auto *node : snode->children) {
+		auto member_name = name + "." + node->str;
+		current_scope[member_name] = node;
 		if (node->type != AST_STRUCT_ITEM) {
 			// embedded struct or union
 			add_members_to_scope(node, name + "." + node->str);
-		}
-		else {
-			auto member_name = name + "." + node->str;
-			current_scope[member_name] = node;
 		}
 	}
 }
@@ -671,6 +673,118 @@ void add_wire_for_ref(const RTLIL::Wire *ref, const std::string &str)
 
 	current_ast_mod->children.push_back(wire);
 	current_scope[str] = wire;
+}
+
+enum class IdentUsage {
+	NotReferenced, // target variable is neither read or written in the block
+	Assigned, // target variable is always assigned before use
+	SyncRequired, // target variable may be used before it has been assigned
+};
+
+// determines whether a local variable a block is always assigned before it is
+// used, meaning the nosync attribute can automatically be added to that
+// variable
+static IdentUsage always_asgn_before_use(const AstNode *node, const std::string &target)
+{
+	// This variable has been referenced before it has necessarily been assigned
+	// a value in this procedure.
+	if (node->type == AST_IDENTIFIER && node->str == target)
+		return IdentUsage::SyncRequired;
+
+	// For case statements (which are also used for if/else), we check each
+	// possible branch. If the variable is assigned in all branches, then it is
+	// assigned, and a sync isn't required. If it used before assignment in any
+	// branch, then a sync is required.
+	if (node->type == AST_CASE) {
+		bool all_defined = true;
+		bool any_used = false;
+		bool has_default = false;
+		for (const AstNode *child : node->children) {
+			if (child->type == AST_COND && child->children.at(0)->type == AST_DEFAULT)
+				has_default = true;
+			IdentUsage nested = always_asgn_before_use(child, target);
+			if (nested != IdentUsage::Assigned && child->type == AST_COND)
+				all_defined = false;
+			if (nested == IdentUsage::SyncRequired)
+				any_used = true;
+		}
+		if (any_used)
+			return IdentUsage::SyncRequired;
+		else if (all_defined && has_default)
+			return IdentUsage::Assigned;
+		else
+			return IdentUsage::NotReferenced;
+	}
+
+	// Check if this is an assignment to the target variable. For simplicity, we
+	// don't analyze sub-ranges of the variable.
+	if (node->type == AST_ASSIGN_EQ) {
+		const AstNode *ident = node->children.at(0);
+		if (ident->type == AST_IDENTIFIER && ident->str == target)
+			return IdentUsage::Assigned;
+	}
+
+	for (const AstNode *child : node->children) {
+		IdentUsage nested = always_asgn_before_use(child, target);
+		if (nested != IdentUsage::NotReferenced)
+			return nested;
+	}
+	return IdentUsage::NotReferenced;
+}
+
+static const std::string auto_nosync_prefix = "\\AutoNosync";
+
+// mark a local variable in an always_comb block for automatic nosync
+// consideration
+static void mark_auto_nosync(AstNode *block, const AstNode *wire)
+{
+	log_assert(block->type == AST_BLOCK);
+	log_assert(wire->type == AST_WIRE);
+	block->attributes[auto_nosync_prefix + wire->str] = AstNode::mkconst_int(1,
+			false);
+}
+
+// check a procedural block for auto-nosync markings, remove them, and add
+// nosync to local variables as necessary
+static void check_auto_nosync(AstNode *node)
+{
+	std::vector<RTLIL::IdString> attrs_to_drop;
+	for (const auto& elem : node->attributes) {
+		// skip attributes that don't begin with the prefix
+		if (elem.first.compare(0, auto_nosync_prefix.size(),
+					auto_nosync_prefix.c_str()))
+			continue;
+
+		// delete and remove the attribute once we're done iterating
+		attrs_to_drop.push_back(elem.first);
+
+		// find the wire based on the attribute
+		std::string wire_name = elem.first.substr(auto_nosync_prefix.size());
+		auto it = current_scope.find(wire_name);
+		if (it == current_scope.end())
+			continue;
+
+		// analyze the usage of the local variable in this block
+		IdentUsage ident_usage = always_asgn_before_use(node, wire_name);
+		if (ident_usage != IdentUsage::Assigned)
+			continue;
+
+		// mark the wire with `nosync`
+		AstNode *wire = it->second;
+		log_assert(wire->type == AST_WIRE);
+		wire->attributes[ID::nosync] = AstNode::mkconst_int(1, false);
+	}
+
+	// remove the attributes we've "consumed"
+	for (const RTLIL::IdString &str : attrs_to_drop) {
+		auto it = node->attributes.find(str);
+		delete it->second;
+		node->attributes.erase(it);
+	}
+
+	// check local variables in any nested blocks
+	for (AstNode *child : node->children)
+		check_auto_nosync(child);
 }
 
 // convert the AST into a simpler AST that has all parameters substituted by their
@@ -980,6 +1094,11 @@ bool AstNode::simplify(bool const_fold, bool at_zero, bool in_lvalue, int stage,
 				}
 			}
 		}
+
+		for (AstNode *child : children)
+			if (child->type == AST_ALWAYS &&
+					child->attributes.count(ID::always_comb))
+				check_auto_nosync(child);
 	}
 
 	// create name resolution entries for all objects with names
@@ -1224,6 +1343,16 @@ bool AstNode::simplify(bool const_fold, bool at_zero, bool in_lvalue, int stage,
 
 	case AST_PARAMETER:
 	case AST_LOCALPARAM:
+		// if parameter is implicit type which is the typename of a struct or union,
+		// save information about struct in wiretype attribute
+		if (children[0]->type == AST_IDENTIFIER && current_scope.count(children[0]->str) > 0) {
+			auto item_node = current_scope[children[0]->str];
+			if (item_node->type == AST_STRUCT || item_node->type == AST_UNION) {
+				attributes[ID::wiretype] = item_node->clone();
+				size_packed_struct(attributes[ID::wiretype], 0);
+				add_members_to_scope(attributes[ID::wiretype], str);
+			}
+		}
 		while (!children[0]->basic_prep && children[0]->simplify(false, false, false, stage, -1, false, true) == true)
 			did_something = true;
 		children[0]->detectSignWidth(width_hint, sign_hint);
@@ -1389,8 +1518,6 @@ bool AstNode::simplify(bool const_fold, bool at_zero, bool in_lvalue, int stage,
 
 	if (const_fold && type == AST_CASE)
 	{
-		int width_hint;
-		bool sign_hint;
 		detectSignWidth(width_hint, sign_hint);
 		while (children[0]->simplify(const_fold, at_zero, in_lvalue, stage, width_hint, sign_hint, in_param)) { }
 		if (children[0]->type == AST_CONSTANT && children[0]->bits_only_01()) {
@@ -1903,7 +2030,7 @@ bool AstNode::simplify(bool const_fold, bool at_zero, bool in_lvalue, int stage,
 		if (name_has_dot(str, sname)) {
 			if (current_scope.count(str) > 0) {
 				auto item_node = current_scope[str];
-				if (item_node->type == AST_STRUCT_ITEM) {
+				if (item_node->type == AST_STRUCT_ITEM || item_node->type == AST_STRUCT) {
 					// structure member, rewrite this node to reference the packed struct wire
 					auto range = make_struct_member_range(this, item_node);
 					newNode = new AstNode(AST_IDENTIFIER, range);
@@ -2225,6 +2352,16 @@ bool AstNode::simplify(bool const_fold, bool at_zero, bool in_lvalue, int stage,
 	if (type == AST_BLOCK && !str.empty())
 	{
 		expand_genblock(str + ".");
+
+		// if this is an autonamed block is in an always_comb
+		if (current_always && current_always->attributes.count(ID::always_comb)
+				&& str.at(0) == '$')
+			// track local variables in this block so we can consider adding
+			// nosync once the block has been fully elaborated
+			for (AstNode *child : children)
+				if (child->type == AST_WIRE &&
+						!child->attributes.count(ID::nosync))
+					mark_auto_nosync(this, child);
 
 		std::vector<AstNode*> new_children;
 		for (size_t i = 0; i < children.size(); i++)
@@ -2579,6 +2716,18 @@ bool AstNode::simplify(bool const_fold, bool at_zero, bool in_lvalue, int stage,
 			while (wire_data->simplify(true, false, false, 1, -1, false, false)) { }
 			current_ast_mod->children.push_back(wire_data);
 
+			int shamt_width_hint = -1;
+			bool shamt_sign_hint = true;
+			shift_expr->detectSignWidth(shamt_width_hint, shamt_sign_hint);
+
+			AstNode *wire_sel = new AstNode(AST_WIRE, new AstNode(AST_RANGE, mkconst_int(shamt_width_hint-1, true), mkconst_int(0, true)));
+			wire_sel->str = stringf("$bitselwrite$sel$%s:%d$%d", filename.c_str(), location.first_line, autoidx++);
+			wire_sel->attributes[ID::nosync] = AstNode::mkconst_int(1, false);
+			wire_sel->is_logic = true;
+			wire_sel->is_signed = shamt_sign_hint;
+			while (wire_sel->simplify(true, false, false, 1, -1, false, false)) { }
+			current_ast_mod->children.push_back(wire_sel);
+
 			did_something = true;
 			newNode = new AstNode(AST_BLOCK);
 
@@ -2595,39 +2744,44 @@ bool AstNode::simplify(bool const_fold, bool at_zero, bool in_lvalue, int stage,
 			ref_data->id2ast = wire_data;
 			ref_data->was_checked = true;
 
+			AstNode *ref_sel = new AstNode(AST_IDENTIFIER);
+			ref_sel->str = wire_sel->str;
+			ref_sel->id2ast = wire_sel;
+			ref_sel->was_checked = true;
+
 			AstNode *old_data = lvalue->clone();
 			if (type == AST_ASSIGN_LE)
 				old_data->lookahead = true;
 
-			AstNode *shamt = shift_expr;
+			AstNode *s = new AstNode(AST_ASSIGN_EQ, ref_sel->clone(), shift_expr);
+			newNode->children.push_back(s);
 
-			int shamt_width_hint = 0;
-			bool shamt_sign_hint = true;
-			shamt->detectSignWidth(shamt_width_hint, shamt_sign_hint);
+			AstNode *shamt = ref_sel;
 
+			// convert to signed while preserving the sign and value
+			shamt = new AstNode(AST_CAST_SIZE, mkconst_int(shamt_width_hint + 1, true), shamt);
+			shamt = new AstNode(AST_TO_SIGNED, shamt);
+
+			// offset the shift amount by the lower bound of the dimension
 			int start_bit = children[0]->id2ast->range_right;
-			bool use_shift = shamt_sign_hint;
+			shamt = new AstNode(AST_SUB, shamt, mkconst_int(start_bit, true));
 
-			if (start_bit != 0) {
-				shamt = new AstNode(AST_SUB, shamt, mkconst_int(start_bit, true));
-				use_shift = true;
-			}
+			// reflect the shift amount if the dimension is swapped
+			if (children[0]->id2ast->range_swapped)
+				shamt = new AstNode(AST_SUB, mkconst_int(source_width - result_width, true), shamt);
+
+			// AST_SHIFT uses negative amounts for shifting left
+			shamt = new AstNode(AST_NEG, shamt);
 
 			AstNode *t;
 
 			t = mkconst_bits(std::vector<RTLIL::State>(result_width, State::S1), false);
-			if (use_shift)
-				t = new AstNode(AST_SHIFT, t, new AstNode(AST_NEG, shamt->clone()));
-			else
-				t = new AstNode(AST_SHIFT_LEFT, t, shamt->clone());
+			t = new AstNode(AST_SHIFT, t, shamt->clone());
 			t = new AstNode(AST_ASSIGN_EQ, ref_mask->clone(), t);
 			newNode->children.push_back(t);
 
 			t = new AstNode(AST_BIT_AND, mkconst_bits(std::vector<RTLIL::State>(result_width, State::S1), false), children[1]->clone());
-			if (use_shift)
-				t = new AstNode(AST_SHIFT, t, new AstNode(AST_NEG, shamt));
-			else
-				t = new AstNode(AST_SHIFT_LEFT, t, shamt);
+			t = new AstNode(AST_SHIFT, t, shamt);
 			t = new AstNode(AST_ASSIGN_EQ, ref_data->clone(), t);
 			newNode->children.push_back(t);
 
@@ -5009,6 +5163,8 @@ bool AstNode::replace_variables(std::map<std::string, AstNode::varinfo_t> &varia
 			width = min(std::abs(children.at(0)->range_left - children.at(0)->range_right) + 1, width);
 		}
 		offset -= variables.at(str).offset;
+		if (variables.at(str).range_swapped)
+			offset = -offset;
 		std::vector<RTLIL::State> &var_bits = variables.at(str).val.bits;
 		std::vector<RTLIL::State> new_bits(var_bits.begin() + offset, var_bits.begin() + offset + width);
 		AstNode *newNode = mkconst_bits(new_bits, variables.at(str).is_signed);
@@ -5066,7 +5222,8 @@ AstNode *AstNode::eval_const_function(AstNode *fcall, bool must_succeed)
 				log_file_error(filename, location.first_line, "Incompatible re-declaration of constant function wire %s.\n", stmt->str.c_str());
 			}
 			variable.val = RTLIL::Const(RTLIL::State::Sx, width);
-			variable.offset = min(stmt->range_left, stmt->range_right);
+			variable.offset = stmt->range_swapped ? stmt->range_left : stmt->range_right;
+			variable.range_swapped = stmt->range_swapped;
 			variable.is_signed = stmt->is_signed;
 			variable.explicitly_sized = stmt->children.size() &&
 				stmt->children.back()->type == AST_RANGE;
@@ -5151,8 +5308,12 @@ AstNode *AstNode::eval_const_function(AstNode *fcall, bool must_succeed)
 				int width = std::abs(range->range_left - range->range_right) + 1;
 				varinfo_t &v = variables[stmt->children.at(0)->str];
 				RTLIL::Const r = stmt->children.at(1)->bitsAsConst(v.val.bits.size());
-				for (int i = 0; i < width; i++)
-					v.val.bits.at(i+offset-v.offset) = r.bits.at(i);
+				for (int i = 0; i < width; i++) {
+					int index = i + offset - v.offset;
+					if (v.range_swapped)
+						index = -index;
+					v.val.bits.at(index) = r.bits.at(i);
+				}
 			}
 
 			delete block->children.front();

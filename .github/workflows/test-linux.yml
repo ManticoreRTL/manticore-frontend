@@ -11,9 +11,7 @@ jobs:
           - { id: ubuntu-20.04, name: focal }
         compiler:
           - 'clang-12'
-          - 'clang-11'
           - 'gcc-11'
-          - 'gcc-10'
         cpp_std:
           - 'c++11'
           - 'c++14'
@@ -21,6 +19,12 @@ jobs:
           - 'c++20'
         include:
           # Limit the older compilers to C++11 mode
+          - os: { id: ubuntu-20.04, name: focal }
+            compiler: 'clang-11'
+            cpp_std: 'c++11'
+          - os: { id: ubuntu-20.04, name: focal }
+            compiler: 'gcc-10'
+            cpp_std: 'c++11'
           - os: { id: ubuntu-18.04, name: bionic }
             compiler: 'clang-3.9'
             cpp_std: 'c++11'
@@ -85,7 +89,7 @@ jobs:
       - name: Get iverilog
         shell: bash
         run: |
-          git clone git://github.com/steveicarus/iverilog.git
+          git clone https://github.com/steveicarus/iverilog.git
 
       - name: Cache iverilog
         id: cache-iverilog
@@ -120,6 +124,7 @@ jobs:
           make -j${{ env.procs }} CCXXSTD=${{ matrix.cpp_std }} CC=$CC CXX=$CC LD=$CC
 
       - name: Run tests
+        if: (matrix.cpp_std == 'c++11') && (matrix.compiler == 'gcc-11')
         shell: bash
         run: |
           make -j${{ env.procs }} test CXXSTD=${{ matrix.cpp_std }} CC=$CC CXX=$CC LD=$CC

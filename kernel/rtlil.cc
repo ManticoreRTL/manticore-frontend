@@ -207,6 +207,7 @@ RTLIL::Const::Const()
 RTLIL::Const::Const(std::string str)
 {
 	flags = RTLIL::CONST_FLAG_STRING;
+	bits.reserve(str.size() * 8);
 	for (int i = str.size()-1; i >= 0; i--) {
 		unsigned char ch = str[i];
 		for (int j = 0; j < 8; j++) {
@@ -219,6 +220,7 @@ RTLIL::Const::Const(std::string str)
 RTLIL::Const::Const(int val, int width)
 {
 	flags = RTLIL::CONST_FLAG_NONE;
+	bits.reserve(width);
 	for (int i = 0; i < width; i++) {
 		bits.push_back((val & 1) != 0 ? State::S1 : State::S0);
 		val = val >> 1;
@@ -228,6 +230,7 @@ RTLIL::Const::Const(int val, int width)
 RTLIL::Const::Const(RTLIL::State bit, int width)
 {
 	flags = RTLIL::CONST_FLAG_NONE;
+	bits.reserve(width);
 	for (int i = 0; i < width; i++)
 		bits.push_back(bit);
 }
@@ -235,6 +238,7 @@ RTLIL::Const::Const(RTLIL::State bit, int width)
 RTLIL::Const::Const(const std::vector<bool> &bits)
 {
 	flags = RTLIL::CONST_FLAG_NONE;
+	this->bits.reserve(bits.size());
 	for (const auto &b : bits)
 		this->bits.emplace_back(b ? State::S1 : State::S0);
 }
@@ -242,6 +246,7 @@ RTLIL::Const::Const(const std::vector<bool> &bits)
 RTLIL::Const::Const(const RTLIL::Const &c)
 {
 	flags = c.flags;
+	this->bits.reserve(c.size());
 	for (const auto &b : c.bits)
 		this->bits.push_back(b);
 }
@@ -1264,6 +1269,22 @@ namespace {
 				port(ID::B, param(ID::WIDTH) * param(ID::S_WIDTH));
 				port(ID::S, param(ID::S_WIDTH));
 				port(ID::Y, param(ID::WIDTH));
+				check_expected();
+				return;
+			}
+
+			if (cell->type == ID($bmux)) {
+				port(ID::A, param(ID::WIDTH) << param(ID::S_WIDTH));
+				port(ID::S, param(ID::S_WIDTH));
+				port(ID::Y, param(ID::WIDTH));
+				check_expected();
+				return;
+			}
+
+			if (cell->type == ID($demux)) {
+				port(ID::A, param(ID::WIDTH));
+				port(ID::S, param(ID::S_WIDTH));
+				port(ID::Y, param(ID::WIDTH) << param(ID::S_WIDTH));
 				check_expected();
 				return;
 			}
@@ -2461,6 +2482,26 @@ DEF_METHOD(Mux,      ID($mux),        0)
 DEF_METHOD(Pmux,     ID($pmux),       1)
 #undef DEF_METHOD
 
+#define DEF_METHOD(_func, _type, _demux) \
+	RTLIL::Cell* RTLIL::Module::add ## _func(RTLIL::IdString name, const RTLIL::SigSpec &sig_a, const RTLIL::SigSpec &sig_s, const RTLIL::SigSpec &sig_y, const std::string &src) { \
+		RTLIL::Cell *cell = addCell(name, _type);                 \
+		cell->parameters[ID::WIDTH] = _demux ? sig_a.size() : sig_y.size(); \
+		cell->parameters[ID::S_WIDTH] = sig_s.size();             \
+		cell->setPort(ID::A, sig_a);                              \
+		cell->setPort(ID::S, sig_s);                              \
+		cell->setPort(ID::Y, sig_y);                              \
+		cell->set_src_attribute(src);                             \
+		return cell;                                              \
+	} \
+	RTLIL::SigSpec RTLIL::Module::_func(RTLIL::IdString name, const RTLIL::SigSpec &sig_a, const RTLIL::SigSpec &sig_s, const std::string &src) { \
+		RTLIL::SigSpec sig_y = addWire(NEW_ID, _demux ? sig_a.size() << sig_s.size() : sig_a.size() >> sig_s.size()); \
+		add ## _func(name, sig_a, sig_s, sig_y, src);             \
+		return sig_y;                                             \
+	}
+DEF_METHOD(Bmux,     ID($bmux),       0)
+DEF_METHOD(Demux,    ID($demux),      1)
+#undef DEF_METHOD
+
 #define DEF_METHOD_2(_func, _type, _P1, _P2) \
 	RTLIL::Cell* RTLIL::Module::add ## _func(RTLIL::IdString name, const RTLIL::SigBit &sig1, const RTLIL::SigBit &sig2, const std::string &src) { \
 		RTLIL::Cell *cell = addCell(name, _type);         \
@@ -3375,10 +3416,17 @@ void RTLIL::Cell::fixup_parameters(bool set_a_signed, bool set_b_signed)
 			type.begins_with("$verific$") || type.begins_with("$array:") || type.begins_with("$extern:"))
 		return;
 
-	if (type == ID($mux) || type == ID($pmux)) {
+	if (type == ID($mux) || type == ID($pmux) || type == ID($bmux)) {
 		parameters[ID::WIDTH] = GetSize(connections_[ID::Y]);
-		if (type == ID($pmux))
+		if (type != ID($mux))
 			parameters[ID::S_WIDTH] = GetSize(connections_[ID::S]);
+		check();
+		return;
+	}
+
+	if (type == ID($demux)) {
+		parameters[ID::WIDTH] = GetSize(connections_[ID::A]);
+		parameters[ID::S_WIDTH] = GetSize(connections_[ID::S]);
 		check();
 		return;
 	}

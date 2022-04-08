@@ -129,12 +129,12 @@ LDFLAGS += -rdynamic
 LDLIBS += -lrt
 endif
 
-YOSYS_VER := 0.12+3
+YOSYS_VER := 0.16
 GIT_REV := $(shell git -C $(YOSYS_SRC) rev-parse --short HEAD 2> /dev/null || echo UNKNOWN)
 OBJS = kernel/version_$(GIT_REV).o
 
 bumpversion:
-	sed -i "/^YOSYS_VER := / s/+[0-9][0-9]*$$/+`git log --oneline 2156e20.. | wc -l`/;" Makefile
+#	sed -i "/^YOSYS_VER := / s/+[0-9][0-9]*$$/+`git log --oneline 07a4368.. | wc -l`/;" Makefile
 
 # set 'ABCREV = default' to use abc/ as it is
 #
@@ -142,7 +142,7 @@ bumpversion:
 # is just a symlink to your actual ABC working directory, as 'make mrproper'
 # will remove the 'abc' directory and you do not want to accidentally
 # delete your work on ABC..
-ABCREV = f6fa2dd
+ABCREV = 00b674d
 ABCPULL = 1
 ABCURL ?= https://github.com/YosysHQ/abc
 ABCMKARGS = CC="$(CXX)" CXX="$(CXX)" ABC_USE_LIBSTDCXX=1 VERBOSE=$(Q)
@@ -594,9 +594,11 @@ $(eval $(call add_include_file,kernel/satgen.h))
 $(eval $(call add_include_file,kernel/qcsat.h))
 $(eval $(call add_include_file,kernel/ff.h))
 $(eval $(call add_include_file,kernel/ffinit.h))
+$(eval $(call add_include_file,kernel/fstdata.h))
 $(eval $(call add_include_file,kernel/mem.h))
 $(eval $(call add_include_file,libs/ezsat/ezsat.h))
 $(eval $(call add_include_file,libs/ezsat/ezminisat.h))
+$(eval $(call add_include_file,libs/fst/fstapi.h))
 $(eval $(call add_include_file,libs/sha1/sha1.h))
 $(eval $(call add_include_file,libs/json11/json11.hpp))
 $(eval $(call add_include_file,passes/fsm/fsmdata.h))
@@ -618,7 +620,7 @@ ifneq ($(ABCEXTERNAL),)
 kernel/yosys.o: CXXFLAGS += -DABCEXTERNAL='"$(ABCEXTERNAL)"'
 endif
 endif
-OBJS += kernel/cellaigs.o kernel/celledges.o kernel/satgen.o kernel/qcsat.o kernel/mem.o kernel/ffmerge.o kernel/ff.o
+OBJS += kernel/cellaigs.o kernel/celledges.o kernel/satgen.o kernel/qcsat.o kernel/mem.o kernel/ffmerge.o kernel/ff.o kernel/fstdata.o
 
 kernel/log.o: CXXFLAGS += -DYOSYS_SRC='"$(YOSYS_SRC)"'
 kernel/yosys.o: CXXFLAGS += -DYOSYS_DATDIR='"$(DATDIR)"' -DYOSYS_PROGRAM_PREFIX='"$(PROGRAM_PREFIX)"'
@@ -641,6 +643,10 @@ OBJS += libs/minisat/Options.o
 OBJS += libs/minisat/SimpSolver.o
 OBJS += libs/minisat/Solver.o
 OBJS += libs/minisat/System.o
+
+OBJS += libs/fst/fstapi.o
+OBJS += libs/fst/fastlz.o
+OBJS += libs/fst/lz4.o
 
 include $(YOSYS_SRC)/frontends/*/Makefile.inc
 include $(YOSYS_SRC)/passes/*/Makefile.inc
@@ -799,6 +805,7 @@ test: $(TARGETS) $(EXTRA_TARGETS)
 	+cd tests/various && bash run-test.sh
 	+cd tests/select && bash run-test.sh
 	+cd tests/sat && bash run-test.sh
+	+cd tests/sim && bash run-test.sh
 	+cd tests/svinterfaces && bash run-test.sh $(SEEDOPT)
 	+cd tests/svtypes && bash run-test.sh $(SEEDOPT)
 	+cd tests/proc && bash run-test.sh
@@ -911,7 +918,7 @@ clean:
 	rm -rf tests/simple/*.out tests/simple/*.log
 	rm -rf tests/memories/*.out tests/memories/*.log tests/memories/*.dmp
 	rm -rf tests/sat/*.log tests/techmap/*.log tests/various/*.log
-	rm -rf tests/bram/temp tests/fsm/temp tests/realmath/temp tests/share/temp tests/smv/temp
+	rm -rf tests/bram/temp tests/fsm/temp tests/realmath/temp tests/share/temp tests/smv/temp tests/various/temp
 	rm -rf vloghtb/Makefile vloghtb/refdat vloghtb/rtl vloghtb/scripts vloghtb/spec vloghtb/check_yosys vloghtb/vloghammer_tb.tar.bz2 vloghtb/temp vloghtb/log_test_*
 	rm -f tests/svinterfaces/*.log_stdout tests/svinterfaces/*.log_stderr tests/svinterfaces/dut_result.txt tests/svinterfaces/reference_result.txt tests/svinterfaces/a.out tests/svinterfaces/*_syn.v tests/svinterfaces/*.diff
 	rm -f  tests/tools/cmp_tbdata

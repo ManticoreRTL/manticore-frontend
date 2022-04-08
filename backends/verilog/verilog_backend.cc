@@ -358,7 +358,8 @@ void dump_sigchunk(std::ostream &f, const RTLIL::SigChunk &chunk, bool no_decima
 void dump_sigspec(std::ostream &f, const RTLIL::SigSpec &sig)
 {
 	if (GetSize(sig) == 0) {
-		f << "\"\"";
+		// See IEEE 1364-2005 Clause 5.1.14.
+		f << "{0{1'b0}}";
 		return;
 	}
 	if (sig.is_chunk()) {
@@ -431,7 +432,7 @@ void dump_wire(std::ostream &f, std::string indent, RTLIL::Wire *wire)
 			dump_const(f, wire->attributes.at(ID::init));
 		}
 		f << stringf(";\n");
-	} else if (!wire->port_input && !wire->port_output)
+	} else
 		f << stringf("%s" "wire%s %s;\n", indent.c_str(), range.c_str(), id(wire->name).c_str());
 #endif
 }
@@ -2298,6 +2299,12 @@ struct VerilogBackend : public Backend {
 				log_cmd_error("Option -extmem must be used with a filename.\n");
 			extmem_prefix = filename.substr(0, filename.rfind('.'));
 		}
+
+		log_push();
+		Pass::call(design, "bmuxmap");
+		Pass::call(design, "demuxmap");
+		Pass::call(design, "clean_zerowidth");
+		log_pop();
 
 		design->sort();
 

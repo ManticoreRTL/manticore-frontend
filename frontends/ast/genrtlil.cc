@@ -877,7 +877,7 @@ void AstNode::detectSignWidthWorker(int &width_hint, bool &sign_hint, bool *foun
 			this_width = id_ast->children[0]->range_left - id_ast->children[0]->range_right + 1;
 			if (children.size() > 1)
 				range = children[1];
-		} else if (id_ast->type == AST_STRUCT_ITEM) {
+		} else if (id_ast->type == AST_STRUCT_ITEM || id_ast->type == AST_STRUCT) {
 			AstNode *tmp_range = make_struct_member_range(this, id_ast);
 			this_width = tmp_range->range_left - tmp_range->range_right + 1;
 			delete tmp_range;
@@ -932,7 +932,8 @@ void AstNode::detectSignWidthWorker(int &width_hint, bool &sign_hint, bool *foun
 		if (children.at(0)->type != AST_CONSTANT)
 			log_file_error(filename, location.first_line, "Static cast with non constant expression!\n");
 		children.at(1)->detectSignWidthWorker(width_hint, sign_hint);
-		width_hint = children.at(0)->bitsAsConst().as_int();
+		this_width = children.at(0)->bitsAsConst().as_int();
+		width_hint = max(width_hint, this_width);
 		if (width_hint <= 0)
 			log_file_error(filename, location.first_line, "Static cast with zero or negative size!\n");
 		break;
@@ -1085,6 +1086,11 @@ void AstNode::detectSignWidthWorker(int &width_hint, bool &sign_hint, bool *foun
 				width_hint = max(width_hint, sub_width_hint);
 				sign_hint = false;
 			}
+			break;
+		}
+		if (str == "\\$size" || str == "\\$bits" || str == "\\$high" || str == "\\$low" || str == "\\$left" || str == "\\$right") {
+			width_hint = 32;
+			sign_hint = true;
 			break;
 		}
 		if (current_scope.count(str))
@@ -1525,13 +1531,20 @@ RTLIL::SigSpec AstNode::genRTLIL(int width_hint, bool sign_hint)
 	// changing the size of signal can be done directly using RTLIL::SigSpec
 	case AST_CAST_SIZE: {
 			RTLIL::SigSpec size = children[0]->genRTLIL();
-			RTLIL::SigSpec sig = children[1]->genRTLIL();
 			if (!size.is_fully_const())
 				log_file_error(filename, location.first_line, "Static cast with non constant expression!\n");
 			int width = size.as_int();
 			if (width <= 0)
 				log_file_error(filename, location.first_line, "Static cast with zero or negative size!\n");
-			sig.extend_u0(width, sign_hint);
+			// determine the *signedness* of the expression
+			int sub_width_hint = -1;
+			bool sub_sign_hint = true;
+			children[1]->detectSignWidth(sub_width_hint, sub_sign_hint);
+			// generate the signal given the *cast's* size and the
+			// *expression's* signedness
+			RTLIL::SigSpec sig = children[1]->genWidthRTLIL(width, sub_sign_hint);
+			// context may effect this node's signedness, but not that of the
+			// casted expression
 			is_signed = sign_hint;
 			return sig;
 		}

@@ -1203,6 +1203,8 @@ struct FirrtlBackend : public Backend {
 		log("Write a FIRRTL netlist of the current design.\n");
 		log("The following commands are executed by this command:\n");
 		log("        pmuxtree\n");
+		log("        bmuxmap\n");
+		log("        demuxmap\n");
 		log("\n");
 	}
 	void execute(std::ostream *&f, std::string filename, std::vector<std::string> args, RTLIL::Design *design) override
@@ -1225,7 +1227,9 @@ struct FirrtlBackend : public Backend {
 		log_header(design, "Executing FIRRTL backend.\n");
 		log_push();
 
-		Pass::call(design, stringf("pmuxtree"));
+		Pass::call(design, "pmuxtree");
+		Pass::call(design, "bmuxmap");
+		Pass::call(design, "demuxmap");
 
 		namecache.clear();
 		autoid_counter = 0;

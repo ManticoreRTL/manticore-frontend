@@ -169,7 +169,10 @@ void VerificImporter::import_attributes(dict<RTLIL::IdString, RTLIL::Const> &att
 	FOREACH_ATTRIBUTE(obj, mi, attr) {
 		if (attr->Key()[0] == ' ' || attr->Value() == nullptr)
 			continue;
-		attributes[RTLIL::escape_id(attr->Key())] = RTLIL::Const(std::string(attr->Value()));
+		std::string val = std::string(attr->Value());
+		if (val.size()>1 && val[0]=='\"' && val.back()=='\"')
+			val = val.substr(1,val.size()-2);
+		attributes[RTLIL::escape_id(attr->Key())] = RTLIL::Const(val);
 	}
 
 	if (nl) {
@@ -198,7 +201,7 @@ void VerificImporter::import_attributes(dict<RTLIL::IdString, RTLIL::Const> &att
 						p = nullptr;
 					else
 						for (auto q = p+2; *q != '\0'; q++)
-							if (*q != '0' && *q != '1') {
+							if (*q != '0' && *q != '1' && *q != 'x' && *q != 'z') {
 								p = nullptr;
 								break;
 							}
@@ -798,28 +801,14 @@ bool VerificImporter::import_netlist_instance_cells(Instance *inst, RTLIL::IdStr
 	}
 
 	if (inst->Type() == OPER_NTO1MUX) {
-		cell = module->addShr(inst_name, IN2, IN1, net_map_at(inst->GetOutput()));
+		cell = module->addBmux(inst_name, IN2, IN1, net_map_at(inst->GetOutput()));
 		import_attributes(cell->attributes, inst);
 		return true;
 	}
 
 	if (inst->Type() == OPER_WIDE_NTO1MUX)
 	{
-		SigSpec data = IN2, out = OUT;
-
-		int wordsize_bits = ceil_log2(GetSize(out));
-		int wordsize = 1 << wordsize_bits;
-
-		SigSpec sel = {IN1, SigSpec(State::S0, wordsize_bits)};
-
-		SigSpec padded_data;
-		for (int i = 0; i < GetSize(data); i += GetSize(out)) {
-			SigSpec d = data.extract(i, GetSize(out));
-			d.extend_u0(wordsize);
-			padded_data.append(d);
-		}
-
-		cell = module->addShr(inst_name, padded_data, sel, out);
+		cell = module->addBmux(inst_name, IN2, IN1, OUT);
 		import_attributes(cell->attributes, inst);
 		return true;
 	}
@@ -1022,7 +1011,7 @@ static std::string sha1_if_contain_spaces(std::string str)
 	return str;
 }
 
-void VerificImporter::import_netlist(RTLIL::Design *design, Netlist *nl, std::set<Netlist*> &nl_todo, bool norename)
+void VerificImporter::import_netlist(RTLIL::Design *design, Netlist *nl, std::map<std::string,Netlist*> &nl_todo, bool norename)
 {
 	std::string netlist_name = nl->GetAtt(" \\top") ? nl->CellBaseName() : nl->Owner()->Name();
 	std::string module_name = netlist_name;
@@ -1670,9 +1659,9 @@ void VerificImporter::import_netlist(RTLIL::Design *design, Netlist *nl, std::se
 		}
 
 	import_verific_cells:
-		nl_todo.insert(inst->View());
-
 		std::string inst_type = inst->View()->Owner()->Name();
+
+		nl_todo[inst_type] = inst->View();
 
 		if (inst->View()->IsOperator() || inst->View()->IsPrimitive()) {
 			inst_type = "$verific$" + inst_type;
@@ -2052,7 +2041,7 @@ struct VerificExtNets
 			string name = stringf("___extnets_%d", portname_cnt++);
 			Port *new_port = new Port(name.c_str(), drive_up ? DIR_OUT : DIR_IN);
 			nl->Add(new_port);
-			net->Connect(new_port);
+			nl->Buf(net)->Connect(new_port);
 
 			// create new Net in up Netlist
 			Net *new_net = final_net;
@@ -2168,7 +2157,7 @@ void verific_import(Design *design, const std::map<std::string,std::string> &par
 {
 	verific_sva_fsm_limit = 16;
 
-	std::set<Netlist*> nl_todo, nl_done;
+	std::map<std::string,Netlist*> nl_todo, nl_done;
 
 	VeriLibrary *veri_lib = veri_file::GetLibrary("work", 1);
 	Array *netlists = NULL;
@@ -2221,10 +2210,10 @@ void verific_import(Design *design, const std::map<std::string,std::string> &par
 	int i;
 
 	FOREACH_ARRAY_ITEM(netlists, i, nl) {
-		if (top.empty() && nl->CellBaseName() != top)
+		if (!top.empty() && nl->CellBaseName() != top)
 			continue;
 		nl->AddAtt(new Att(" \\top", NULL));
-		nl_todo.insert(nl);
+		nl_todo.emplace(nl->CellBaseName(), nl);
 	}
 
 	delete netlists;
@@ -2233,27 +2222,32 @@ void verific_import(Design *design, const std::map<std::string,std::string> &par
 		log_error("%s\n", verific_error_msg.c_str());
 
 	for (auto nl : nl_todo)
-	    nl->ChangePortBusStructures(1 /* hierarchical */);
+	    nl.second->ChangePortBusStructures(1 /* hierarchical */);
 
 	VerificExtNets worker;
 	for (auto nl : nl_todo)
-		worker.run(nl);
+		worker.run(nl.second);
 
 	while (!nl_todo.empty()) {
-		Netlist *nl = *nl_todo.begin();
-		if (nl_done.count(nl) == 0) {
+		auto it = nl_todo.begin();
+		Netlist *nl = it->second;
+		if (nl_done.count(it->first) == 0) {
 			VerificImporter importer(false, false, false, false, false, false, false);
+			nl_done[it->first] = it->second;
 			importer.import_netlist(design, nl, nl_todo, nl->Owner()->Name() == top);
 		}
-		nl_todo.erase(nl);
-		nl_done.insert(nl);
+		nl_todo.erase(it);
 	}
 
+	hier_tree::DeleteHierarchicalTree();
 	veri_file::Reset();
 #ifdef VERIFIC_VHDL_SUPPORT
 	vhdl_file::Reset();
 #endif
 	Libset::Reset();
+	Message::Reset();
+	RuntimeFlags::DeleteAllFlags();
+	LineFile::DeleteAllLineFiles();
 	verific_incdirs.clear();
 	verific_libdirs.clear();
 	verific_import_pending = false;
@@ -2295,7 +2289,7 @@ struct VerificPass : public Pass {
 		log("\n");
 		log("Additional -D<macro>[=<value>] options may be added after the option indicating\n");
 		log("the language version (and before file names) to set additional verilog defines.\n");
-		log("The macros SYNTHESIS and VERIFIC are defined implicitly.\n");
+		log("The macros YOSYS, SYNTHESIS, and VERIFIC are defined implicitly.\n");
 		log("\n");
 		log("\n");
 		log("    verific -formal <verilog-file>..\n");
@@ -2310,9 +2304,11 @@ struct VerificPass : public Pass {
 		log("\n");
 		log("\n");
 #endif
-		log("    verific {-f|-F} <command-file>\n");
+		log("    verific {-f|-F} [-vlog95|-vlog2k|-sv2005|-sv2009|-sv2012|-sv|-formal] <command-file>\n");
 		log("\n");
 		log("Load and execute the specified command file.\n");
+		log("Override verilog parsing mode can be set.\n");
+		log("The macros YOSYS, SYNTHESIS/FORMAL, and VERIFIC are defined implicitly.\n");
 		log("\n");
 		log("Command file parser supports following commands:\n");
 		log("    +define    - defines macro\n");
@@ -2678,11 +2674,51 @@ struct VerificPass : public Pass {
 		if (GetSize(args) > argidx && (args[argidx] == "-f" || args[argidx] == "-F"))
 		{
 			unsigned verilog_mode = veri_file::VERILOG_95; // default recommended by Verific
+			bool is_formal = false;
+			const char* filename = nullptr;
 
 			Verific::veri_file::f_file_flags flags = (args[argidx] == "-f") ? veri_file::F_FILE_NONE : veri_file::F_FILE_CAPITAL;
-			Array *file_names = veri_file::ProcessFFile(args[++argidx].c_str(), flags, verilog_mode);
 
+			for (argidx++; argidx < GetSize(args); argidx++) {
+				if (args[argidx] == "-vlog95") {
+					verilog_mode = veri_file::VERILOG_95;
+					continue;
+				} else if (args[argidx] == "-vlog2k") {
+					verilog_mode = veri_file::VERILOG_2K;
+					continue;
+				} else if (args[argidx] == "-sv2005") {
+					verilog_mode = veri_file::SYSTEM_VERILOG_2005;
+					continue;
+				} else if (args[argidx] == "-sv2009") {
+					verilog_mode = veri_file::SYSTEM_VERILOG_2009;
+					continue;
+				} else if (args[argidx] == "-sv2012" || args[argidx] == "-sv" || args[argidx] == "-formal") {
+					verilog_mode = veri_file::SYSTEM_VERILOG;
+					if (args[argidx] == "-formal") is_formal = true;
+					continue;
+				} else if (args[argidx].compare(0, 1, "-") == 0) {
+					cmd_error(args, argidx, "unknown option");
+					goto check_error;
+				}
+
+				if (!filename) {
+					filename = args[argidx].c_str();
+					continue;
+				} else {
+					log_cmd_error("Only one filename can be specified.\n");
+				}
+			}
+			if (!filename)
+				log_cmd_error("Filname must be specified.\n");
+
+			unsigned analysis_mode = verilog_mode; // keep default as provided by user if not defined in file
+			Array *file_names = veri_file::ProcessFFile(filename, flags, analysis_mode);
+			if (analysis_mode != verilog_mode)
+				log_warning("Provided verilog mode differs from one specified in file.\n");
+
+			veri_file::DefineMacro("YOSYS");
 			veri_file::DefineMacro("VERIFIC");
+			veri_file::DefineMacro(is_formal ? "FORMAL" : "SYNTHESIS");
 
 			if (!veri_file::AnalyzeMultipleFiles(file_names, verilog_mode, work.c_str(), veri_file::MFCU)) {
 				verific_error_msg.clear();
@@ -2713,6 +2749,7 @@ struct VerificPass : public Pass {
 			else
 				log_abort();
 
+			veri_file::DefineMacro("YOSYS");
 			veri_file::DefineMacro("VERIFIC");
 			veri_file::DefineMacro(args[argidx] == "-formal" ? "FORMAL" : "SYNTHESIS");
 
@@ -3018,7 +3055,7 @@ struct VerificPass : public Pass {
 #endif
 		if (GetSize(args) > argidx && args[argidx] == "-import")
 		{
-			std::set<Netlist*> nl_todo, nl_done;
+			std::map<std::string,Netlist*> nl_todo, nl_done;
 			bool mode_all = false, mode_gates = false, mode_keep = false;
 			bool mode_nosva = false, mode_names = false, mode_verific = false;
 			bool mode_autocover = false, mode_fullinit = false;
@@ -3121,7 +3158,7 @@ struct VerificPass : public Pass {
 				int i;
 
 				FOREACH_ARRAY_ITEM(netlists, i, nl)
-					nl_todo.insert(nl);
+					nl_todo.emplace(nl->CellBaseName(), nl);
 				delete netlists;
 			}
 			else
@@ -3173,8 +3210,10 @@ struct VerificPass : public Pass {
 				int i;
 
 				FOREACH_ARRAY_ITEM(netlists, i, nl) {
+					if (!top_mod_names.count(nl->CellBaseName()))
+						continue;
 					nl->AddAtt(new Att(" \\top", NULL));
-					nl_todo.insert(nl);
+					nl_todo.emplace(nl->CellBaseName(), nl);
 				}
 				delete netlists;
 			}
@@ -3184,17 +3223,17 @@ struct VerificPass : public Pass {
 
 			if (flatten) {
 				for (auto nl : nl_todo)
-					nl->Flatten();
+					nl.second->Flatten();
 			}
 
 			if (extnets) {
 				VerificExtNets worker;
 				for (auto nl : nl_todo)
-					worker.run(nl);
+					worker.run(nl.second);
 			}
 
 			for (auto nl : nl_todo)
-				nl->ChangePortBusStructures(1 /* hierarchical */);
+				nl.second->ChangePortBusStructures(1 /* hierarchical */);
 
 			if (!dumpfile.empty()) {
 				VeriWrite veri_writer;
@@ -3202,21 +3241,26 @@ struct VerificPass : public Pass {
 			}
 
 			while (!nl_todo.empty()) {
-				Netlist *nl = *nl_todo.begin();
-				if (nl_done.count(nl) == 0) {
+				auto it = nl_todo.begin();
+				Netlist *nl = it->second;
+				if (nl_done.count(it->first) == 0) {
 					VerificImporter importer(mode_gates, mode_keep, mode_nosva,
 							mode_names, mode_verific, mode_autocover, mode_fullinit);
+					nl_done[it->first] = it->second;
 					importer.import_netlist(design, nl, nl_todo, top_mod_names.count(nl->Owner()->Name()));
 				}
-				nl_todo.erase(nl);
-				nl_done.insert(nl);
+				nl_todo.erase(it);
 			}
 
+			hier_tree::DeleteHierarchicalTree();
 			veri_file::Reset();
 #ifdef VERIFIC_VHDL_SUPPORT
 			vhdl_file::Reset();
 #endif
 			Libset::Reset();
+			Message::Reset();
+			RuntimeFlags::DeleteAllFlags();
+			LineFile::DeleteAllLineFiles();
 			verific_incdirs.clear();
 			verific_libdirs.clear();
 			verific_import_pending = false;
