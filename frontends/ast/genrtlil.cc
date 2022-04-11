@@ -1843,10 +1843,20 @@ RTLIL::SigSpec AstNode::genRTLIL(int width_hint, bool sign_hint)
 		break;
 
 	// MANTICORE RELATED NODES
-	case AST_MANTICORE_DISPLAY:
+	case AST_MANTICORE:
 		{
-			IdString celltype = ID(manticore_display);
-			log_assert(children.size() >= 3);
+
+
+
+			IdString celltype = ID($manticore);
+			if (str == "$display") {
+				log_assert(children.size() >= 3);
+			} else if (str == "$stop" || str == "$finish") {
+				log_assert(children.size() == 2);
+			} else if (str == "$assert") {
+				log_assert(children.size() == 3);
+			}
+
 			RTLIL::SigSpec en = children[0]->genRTLIL();
 			log_assert(en.is_bit());
 			RTLIL::SigSpec order = children[1]->genRTLIL();
@@ -1855,20 +1865,30 @@ RTLIL::SigSpec AstNode::genRTLIL(int width_hint, bool sign_hint)
 			IdString cellname = stringf("%s$%s:%d$%d", celltype.c_str(), filename.c_str(), location.first_line, autoidx++);
 			check_unique_id(current_module, cellname, this, "procedural assertion");
 			RTLIL::Cell *cell = current_module->addCell(cellname, celltype);
-
-			const std::vector<AstNode*> var_args(children.begin() + 3, children.end());
 			cell->setParam(ID::ORDER, order.as_const());
-			cell->setParam(ID::VAR_ARG_NUM, RTLIL::Const(var_args.size()));
-
-			log("FMT: %s\n", children[2]->str.c_str());
-			log_assert(children[2]->is_string);
-
-			auto fmt = RTLIL::Const(children[2]->str);
-			cell->setParam(ID::FMT, fmt);
-			for (int i = 3; i < GetSize(children); i++) {
-				RTLIL::SigSpec va = children[i]->genRTLIL();
-				cell->setParam(stringf("\\VA_WIDTH_%d", i - 3), RTLIL::Const(va.size()));
-				cell->setPort(stringf("\\VA_%d", i - 3), va);
+			cell->setPort(ID::EN, en);
+			if (str == "$display") {
+				const std::vector<AstNode*> var_args(children.begin() + 3, children.end());
+				cell->setParam(ID::VAR_ARG_NUM, RTLIL::Const(var_args.size()));
+				log_debug("FMT: %s\n", children[2]->str.c_str());
+				log_assert(children[2]->is_string);
+				auto fmt = RTLIL::Const(children[2]->str);
+				cell->setParam(ID::FMT, fmt);
+				for (int i = 3; i < GetSize(children); i++) {
+					RTLIL::SigSpec va = children[i]->genRTLIL();
+					cell->setParam(stringf("\\VA_WIDTH_%d", i - 3), RTLIL::Const(va.size()));
+					cell->setPort(stringf("\\VA_%d", i - 3), va);
+				}
+				cell->setPort(ID::A, RTLIL::Const(State::Sx));
+			} else {
+				cell->setParam(ID::VAR_ARG_NUM, RTLIL::Const(0));
+				cell->setParam(ID::FMT, RTLIL::Const(loc_string()));
+				cell->setParam(ID::TYPE, RTLIL::Const(str));
+				if (str == "$assert") { // connect the assert condition signal
+					cell->setPort(ID::A, children[2]->genRTLIL());
+				} else {
+					cell->setPort(ID::A, RTLIL::Const(State::Sx));
+				}
 			}
 
 			for (auto &attr : attributes) {
@@ -1876,7 +1896,7 @@ RTLIL::SigSpec AstNode::genRTLIL(int width_hint, bool sign_hint)
 					log_file_error(filename, location.first_line, "Attribute `%s' with non-constant value!\n", attr.first.c_str());
 				cell->attributes[attr.first] = attr.second->asAttrConst();
 			}
-			cell->set_bool_attribute(ID::blackbox, true);
+			set_src_attr(cell, this);
 			cell->set_bool_attribute(ID::keep, true);
 		}
 		break;

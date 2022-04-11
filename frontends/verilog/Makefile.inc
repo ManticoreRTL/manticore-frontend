@@ -21,6 +21,6 @@ OBJS += frontends/verilog/verilog_lexer.o
 OBJS += frontends/verilog/preproc.o
 OBJS += frontends/verilog/verilog_frontend.o
 OBJS += frontends/verilog/const2ast.o
-OBJS += frontends/verilog/masm_expect.o
+OBJS += frontends/verilog/manticore_preprocess.o
 OBJS += frontends/verilog/transform_sanitizer.o
 OBJS += frontends/verilog/masm_insert_debug_attr.o

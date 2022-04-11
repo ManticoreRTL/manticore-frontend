@@ -2794,13 +2794,13 @@ bool AstNode::simplify(bool const_fold, bool at_zero, bool in_lvalue, int stage,
 		goto apply_newNode;
 	}
 	// MANTICORE modifications
-	if ((type == AST_MANTICORE_DISPLAY) && current_always && current_always_clocked) {
+	if ((type == AST_MANTICORE) && current_always && current_always_clocked) {
 
-
+		log_assert(str == "$display" || str == "$stop" || str == "$finish" || str == "$assert");
 
 		auto freshName = [this](const std::string& name) {
 			std::stringstream sstr;
-			sstr << "$manticore_display$" << filename << ":" << location.first_line << "$" << name << "$" << (autoidx++);
+			sstr << "$manticore_task$" << filename << ":" << location.first_line << "$" << name << "$" << (autoidx++);
 			return sstr.str();
 		};
 
@@ -2829,9 +2829,6 @@ bool AstNode::simplify(bool const_fold, bool at_zero, bool in_lvalue, int stage,
 			return new AstNode(AST_ASSIGN_LE, lvalue, rvalue->clone());
 		};
 
-		log_assert(children.size() >= 3);
-		std::vector<AstNode*> var_args (children.cbegin() + 3, children.cend());
-
 		// create a block for non-blocking assignments of the arguments
 		// given to the display node
 		AstNode* assignment_block = new AstNode(
@@ -2846,29 +2843,47 @@ bool AstNode::simplify(bool const_fold, bool at_zero, bool in_lvalue, int stage,
 		assignment_block->children.push_back(en_assign);
 		assignment_block->filename = filename;
 		assignment_block->location = location;
-		AstNode* manticore_disp = new AstNode(
-			AST_MANTICORE_DISPLAY,
-			en_assign->children[0]->clone(),
-			children[1]->clone(),
-			children[2]->clone()
+		AstNode* manticore_task = new AstNode(
+				AST_MANTICORE,
+				en_assign->children[0]->clone(), // enable signal
+				children[1]->clone() // ordering integer
 		);
-		manticore_disp->attributes.swap(attributes);
-		manticore_disp->location = location;
-		manticore_disp->filename = filename;
-		for(const auto& va : var_args) {
-			// get the width of the reg
-			int reg_width = -1;
-			bool reg_sign = true;
-			va->detectSignWidth(reg_width, reg_sign);
-			auto va_reg = createRegister(freshName("VARG"), reg_width, reg_sign);
-			auto va_assign = createNonBlockingAssignment(va_reg->str, va->clone());
-			assignment_block->children.push_back(va_assign);
-			// set the argument in the
-			manticore_disp->children.push_back(va_assign->children[0]->clone());
+
+		if (str == "$display") {
+			log_assert(children.size() >= 3);
+			std::vector<AstNode*> var_args (children.cbegin() + 3, children.cend());
+			manticore_task->children.push_back(children[2]->clone()); // fmt string
+			for(const auto& va : var_args) {
+				// get the width of the reg
+				int reg_width = -1;
+				bool reg_sign = true;
+				va->detectSignWidth(reg_width, reg_sign);
+				auto va_reg = createRegister(freshName("VARG"), reg_width, reg_sign);
+				auto va_assign = createNonBlockingAssignment(va_reg->str, va->clone());
+				assignment_block->children.push_back(va_assign);
+				// set the argument in the
+				manticore_task->children.push_back(va_assign->children[0]->clone());
+			}
+		} else if (str == "$assert") {
+
+			log_assert(GetSize(children) == 3);
+
+			auto check_reg = createRegister(freshName("CHECK"), 1, false);
+			auto check_assign = createNonBlockingAssignment(check_reg->str, children.back()->clone());
+			assignment_block->children.push_back(check_assign);
+			manticore_task->children.push_back(check_assign->children[0]->clone());
 		}
-		current_ast_mod->children.push_back(manticore_disp);
+
+		manticore_task->location = location;
+		manticore_task->filename = filename;
+		manticore_task->attributes.swap(attributes);
+		manticore_task->str = str;
+
+		current_ast_mod->children.push_back(manticore_task);
 		current_ast_mod->children.push_back(en_init);
 		newNode = assignment_block;
+
+
 		goto apply_newNode;
 
 	}

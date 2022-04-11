@@ -180,10 +180,8 @@ std::string AST::type2str(AstNodeType type)
 	X(AST_BIND)
 
 	// MANTICORE SPECIFIC NODES
-	X(AST_MANTICORE_ASSERT)
-	X(AST_MANTICORE_DISPLAY)
-	X(AST_MANTICORE_FINISH)
-	X(AST_MANTICORE_STOP)
+	X(AST_MANTICORE)
+
 #undef X
 	default:
 		log_abort();

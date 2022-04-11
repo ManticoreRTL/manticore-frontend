@@ -30,7 +30,7 @@
 #include "preproc.h"
 #include "kernel/yosys.h"
 #include "libs/sha1/sha1.h"
-#include "masm_expect.h"
+#include "manticore_preprocess.h"
 #include "transform_sanitizer.h"
 #include "masm_insert_debug_attr.h"
 #include <stdarg.h>
@@ -514,19 +514,19 @@ struct VerilogFrontend : public Frontend {
 			error_on_dpi_function(current_ast);
 
 
-		masm_frontend::HoistExpectTasks masm_expect_hoister(current_ast);
+		masm_frontend::ManticorePreprocess manticore_prep(current_ast);
 
 
-		auto hoisted = masm_expect_hoister.transformed();
+		auto hoisted = manticore_prep.transformed();
 		masm_frontend::TransformSanitizer checker(current_ast, hoisted);
 		checker.check();
 
-		masm_frontend::MasmInsertDebugAttributes debug_inserter(hoisted);
-		auto with_debug_sym = debug_inserter.transformed();
+		// masm_frontend::MasmInsertDebugAttributes debug_inserter(hoisted);
+		// auto with_debug_sym = debug_inserter.transformed();
 
 
 
-		AST::process(design, with_debug_sym, flag_dump_ast1, flag_dump_ast2, flag_no_dump_ptr, flag_dump_vlog1, flag_dump_vlog2, flag_dump_rtlil, flag_nolatches,
+		AST::process(design, hoisted, flag_dump_ast1, flag_dump_ast2, flag_no_dump_ptr, flag_dump_vlog1, flag_dump_vlog2, flag_dump_rtlil, flag_nolatches,
 				flag_nomeminit, flag_nomem2reg, flag_mem2reg, flag_noblackbox, lib_mode, flag_nowb, flag_noopt, flag_icells, flag_pwires, flag_nooverwrite, flag_overwrite, flag_defer, default_nettype_wire);
 
 
@@ -538,7 +538,7 @@ struct VerilogFrontend : public Frontend {
 		user_type_stack.clear();
 
 		delete hoisted;
-		delete with_debug_sym;
+		// delete with_debug_sym;
 		delete current_ast;
 		current_ast = NULL;
 

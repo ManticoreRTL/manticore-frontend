@@ -1714,6 +1714,7 @@ namespace {
 				return;
 			}
 
+
 			if (cell->type == ID($_BUF_))    { port(ID::A,1); port(ID::Y,1); check_expected(); return; }
 			if (cell->type == ID($_NOT_))    { port(ID::A,1); port(ID::Y,1); check_expected(); return; }
 			if (cell->type == ID($_AND_))    { port(ID::A,1); port(ID::B,1); port(ID::Y,1); check_expected(); return; }
@@ -1809,6 +1810,23 @@ namespace {
 					ID($_DLATCHSR_NNN_), ID($_DLATCHSR_NNP_), ID($_DLATCHSR_NPN_), ID($_DLATCHSR_NPP_),
 					ID($_DLATCHSR_PNN_), ID($_DLATCHSR_PNP_), ID($_DLATCHSR_PPN_), ID($_DLATCHSR_PPP_)))
 				{ port(ID::E,1); port(ID::S,1); port(ID::R,1); port(ID::D,1); port(ID::Q,1); check_expected(); return; }
+
+			if (cell->type == ID($manticore)) {
+
+				param(ID::ORDER);
+				param(ID::FMT);
+				auto num_args = param(ID::VAR_ARG_NUM);
+				for (int i = 0; i < num_args; i++) {
+					auto VA_WIDTH = IdString(stringf("\\VA_WIDTH_%d", i));
+					auto VA = IdString(stringf("\\VA_%d", i));
+					auto w = param(VA_WIDTH);
+					port(VA, w);
+				}
+				port(ID::A, 1);
+				port(ID::EN, 1);
+
+				return;
+			}
 
 			error(__LINE__);
 		}

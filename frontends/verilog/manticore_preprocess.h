@@ -10,13 +10,13 @@ namespace masm_frontend
 #define DISPATCH_DECL(ast_type) void __transform_##ast_type(AstNode *n)
 
 using namespace Yosys;
-class HoistExpectTasks
+class ManticorePreprocess
 {
 
       public:
 	using AstNode = AST::AstNode;
 	using NodeType = AST::AstNodeType;
-	HoistExpectTasks(AstNode *design)
+	ManticorePreprocess(AstNode *design)
 	{
 		m_design = design;
 		m_mutable_design = design->clone();

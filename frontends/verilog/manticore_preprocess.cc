@@ -1,12 +1,12 @@
-#include "masm_expect.h"
+#include "manticore_preprocess.h"
 
 namespace masm_frontend
 {
 
-#define DISPATCH_DEF(ast_type, node) void HoistExpectTasks::__transform_##ast_type(AstNode *node)
+#define DISPATCH_DEF(ast_type, node) void ManticorePreprocess::__transform_##ast_type(AstNode *node)
 #define no_warn_unused __attribute__((unused))
 
-AST::AstNode *HoistExpectTasks::transformed()
+AST::AstNode *ManticorePreprocess::transformed()
 {
 	if (!m_is_transformed)
 		transformNode(m_mutable_design);
@@ -14,7 +14,7 @@ AST::AstNode *HoistExpectTasks::transformed()
 	return m_mutable_design;
 }
 
-void HoistExpectTasks::transformNode(AstNode *mutable_ast)
+void ManticorePreprocess::transformNode(AstNode *mutable_ast)
 {
 
 // implement double dispatch manually because we are not
@@ -243,38 +243,7 @@ DISPATCH_DEF(AST_BLOCK, block)
 
 	for (auto &child : block->children) {
 
-		if (child->type == AST::AST_TCALL) {
-			log("Observed AST_TCALL %s\n", child->str.c_str());
-		}
-		if (child->type == AST::AST_TCALL && child->str == "$display" && m_current_clock.size() == 1) {
-
-			// create a new AstNode represeting this $display with some added information
-			// e.g., $display("my message with %d var args from %s", 2, "Manticore")
-			// becomes $manticore_display(cond, order, "my message with %d var args from %s", 2, "Manticore");
-			// which is later translated to an RTILIL cell in getRTIIL
-
-			AstNode *cond_expr;
-			if (m_conditions.size() == 0) {
-				log_warning("Avoid using $display at every cycle!\n");
-				cond_expr = AstNode::mkconst_int(1, false, 1);
-			} else {
-				cond_expr = conjunction(m_conditions);
-			}
-
-
-			AstNode *manticore_display = new AstNode(AST::AST_MANTICORE_DISPLAY, cond_expr, AstNode::mkconst_int(m_ordering++, false));
-			manticore_display->str = "$manticore_display";
-			for (const auto &grand_child : child->children) {
-				manticore_display->children.push_back(grand_child->clone());
-			}
-			manticore_display->attributes.swap(child->attributes);
-
-			transformed_children.push_back(manticore_display);
-
-			delete child;
-
-		} else if (child->type == AST::AST_TCALL &&
-			   (child->str == "$masm_expect" || child->str == "$masm_stop" || child->str == "$masm_abort")) {
+		if (child->type == AST::AST_TCALL && (child->str == "$masm_expect" || child->str == "$masm_stop" || child->str == "$masm_abort")) {
 
 			log("Found masm system call at %s\n", child->loc_string().c_str());
 
@@ -408,13 +377,55 @@ DISPATCH_DEF(AST_BLOCK, block)
 				m_new_nodes.push_back(condition_out);
 				// ensure the optimizer won't remove this
 				expect_cell->attributes.insert(std::make_pair(ID::keep, AstNode::mkconst_int(1, false)));
-
 			}
 
 			m_new_nodes.push_back(expect_cell);
 			// delete this node, no longer needed
 			// AstNode*
 			m_add_masm_privilaged = true; // notify the design to add the MASM_PRIVILAGED blackbox
+			delete child;
+		} else if (child->type == AST::AST_TCALL && (child->str == "$display" || child->str == "$finish" || child->str == "$stop") &&
+			   m_current_clock.size() == 1) {
+
+			// create a new AstNode represeting this $display/$stop/$finish with some added information
+			// e.g., $display("my message with %d var args from %s", 2, "Manticore")
+			// becomes $manticore_display(cond, order, "my message with %d var args from %s", 2, "Manticore");
+			// which is later translated to an RTILIL blackbox cell in getRTIIL
+
+			AstNode *cond_expr;
+			if (m_conditions.size() == 0) {
+				cond_expr = AstNode::mkconst_int(1, false, 1);
+			} else {
+				cond_expr = conjunction(m_conditions);
+			}
+
+			AstNode *manticore_node = new AstNode(AST::AST_MANTICORE, cond_expr, AstNode::mkconst_int(m_ordering++, false));
+			for (const auto &grand_child : child->children) {
+				manticore_node->children.push_back(grand_child->clone());
+			}
+			manticore_node->str = child->str;
+			manticore_node->location = child->location;
+			manticore_node->filename = child->filename;
+			manticore_node->attributes.swap(child->attributes);
+			transformed_children.push_back(manticore_node);
+			delete child;
+
+		} else if (child->type == AST::AST_ASSERT && m_current_clock.size() == 1) {
+			AstNode *en_expr;
+			if (m_conditions.size() == 0) {
+				en_expr = AstNode::mkconst_int(1, false, 1);
+			} else {
+				en_expr = conjunction(m_conditions);
+			}
+			AstNode *manticore_assert = new AstNode(AST::AST_MANTICORE, en_expr, AstNode::mkconst_int(m_ordering++, false));
+			for (const auto &grand_child : child->children) {
+				manticore_assert->children.push_back(grand_child->clone());
+			}
+			manticore_assert->str = "$assert";
+			manticore_assert->location = child->location;
+			manticore_assert->filename = child->filename;
+			manticore_assert->attributes.swap(child->attributes);
+			transformed_children.push_back(manticore_assert);
 			delete child;
 		} else {
 			transformNode(child);
