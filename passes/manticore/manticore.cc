@@ -30,8 +30,9 @@ struct Manticore : public Pass {
 	struct Config {
 		Optional<std::string> top_name;
 		Optional<std::string> track_file;
-
-		inline bool allSet() const { return top_name.nonEmpty() && track_file.nonEmpty(); }
+		Optional<std::string> out;
+		bool no_check = false;
+		// inline bool allSet() const { return top_name.nonEmpty() && track_file.nonEmpty(); }
 	};
 
 	void parseArgs__(std::list<std::string> &args, Config &cfg)
@@ -54,6 +55,15 @@ struct Manticore : public Pass {
 					args.pop_front();
 					parseArgs__(args, cfg);
 				}
+			} else if (front == "-out") {
+				if (!args.empty()) {
+					cfg.out = Some(args.front());
+					args.pop_front();
+					parseArgs__(args, cfg);
+				}
+			} else if (front == "-no-check") {
+				cfg.no_check = true;
+				parseArgs__(args, cfg);
 			}
 		}
 	}
@@ -70,8 +80,12 @@ struct Manticore : public Pass {
 		if (cfg.top_name.empty()) {
 			log_error("Please provide the top module!");
 		}
+		if (cfg.out.empty()) {
+			log_error("Please provide the -out argument");
+		}
 		return cfg;
 	}
+
 	void execute(std::vector<std::string> args, Design *design) override
 	{
 
@@ -85,11 +99,19 @@ struct Manticore : public Pass {
 		} else {
 			Pass::call(design, "manticore_init");
 		}
+		Pass::call(design, "dffinit");
         Pass::call(design, "opt");
+		Pass::call(design, "opt_reduce");
+		Pass::call(design, "opt_demorgan");
 		Pass::call(design, "manticore_memory");
+		// Pass::call(design, "manticore_check");
         Pass::call(design, "flatten");
 		Pass::call(design, "manticore_meminit");
 		Pass::call(design, "opt");
+		Pass::call(design, "manticore_dff");
+		if (!cfg.no_check)
+			Pass::call(design, "manticore_check");
+		Pass::call(design, stringf("manticore_writer %s", cfg.out.value.c_str()));
 
 
 	}

@@ -140,7 +140,7 @@ struct ManticoreDff : public Pass {
 	void execute(std::vector<std::string>, Design *design) override
 	{
 
-		log_header(design, "Executing Manticore DFF Pass");
+		log_header(design, "Executing Manticore DFF Pass\n");
 
 		auto top = design->top_module();
 
