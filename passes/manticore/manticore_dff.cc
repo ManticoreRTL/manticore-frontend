@@ -1,3 +1,5 @@
+#include "kernel/ffinit.h"
+#include "kernel/modtools.h"
 #include "kernel/yosys.h"
 
 USING_YOSYS_NAMESPACE
@@ -32,17 +34,13 @@ struct ManticoreDff : public Pass {
 					     ID($sdffce) // diff with (chip)-EN and sync reset (reset only applies if enabled)
 			);
 		}
+
 		Cell *dffCast(Cell *cell)
 		{
 			auto din = cell->getPort(ID::D);
 			auto dout = cell->getPort(ID::Q);
-            auto dff = m_module->addDff(
-                fresh("dff_cast"),
-                cell->getPort(ID::CLK),
-                cell->getPort(ID::D),
-                cell->getPort(ID::Q),
-                cell->getParam(ID::CLK_POLARITY).as_bool()
-            );
+			auto dff = m_module->addDff(fresh("dff_cast"), cell->getPort(ID::CLK), cell->getPort(ID::D), cell->getPort(ID::Q),
+						    cell->getParam(ID::CLK_POLARITY).as_bool());
 			dff->setPort(ID::CLK, cell->getPort(ID::CLK));
 			dff->setPort(ID::Q, cell->getPort(ID::Q));
 			dff->setParam(ID::CLK_POLARITY, cell->getParam(ID::CLK_POLARITY));
@@ -63,7 +61,6 @@ struct ManticoreDff : public Pass {
 	{
 
 		auto builder = Builder(mod);
-
 
 		std::vector<Cell *> convertibles;
 		pool<Module *> sub_modules;
@@ -89,7 +86,6 @@ struct ManticoreDff : public Pass {
 				auto din = builder.muxed(q_sig, d_sig, cell->getPort(ID::EN), en_pol);
 				dff->setPort(ID::D, din);
 				mod->remove(cell);
-
 
 			} else if (cell->type == ID($sdff)) {
 				auto dff = builder.dffCast(cell);
@@ -128,6 +124,22 @@ struct ManticoreDff : public Pass {
 			} else {
 
 				log_abort();
+			}
+		}
+
+		// now try to set the initial values of each dff
+		SigMap sigmap(mod);
+		FfInitVals initvals(&sigmap, mod);
+
+		for (auto cell : mod->cells()) {
+
+			if (cell->type == ID($dff)) {
+				SigSpec q_sig = cell->getPort(ID::Q);
+				Const init = initvals(q_sig);
+				cell->set_const_attribute(ID::INIT, init);
+				log("Setting %s.%s.%s (port=%s, net=%s) to %s.\n",
+					log_id(mod), log_id(cell), log_id(ID::INIT),
+								log_id(ID::Q), log_signal(q_sig), log_const(init));
 			}
 		}
 

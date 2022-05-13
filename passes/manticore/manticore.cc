@@ -99,12 +99,12 @@ struct Manticore : public Pass {
 		} else {
 			Pass::call(design, "manticore_init");
 		}
-		Pass::call(design, "dffinit");
+
         Pass::call(design, "opt");
 		Pass::call(design, "opt_reduce");
 		Pass::call(design, "opt_demorgan");
 		Pass::call(design, "manticore_memory");
-		// Pass::call(design, "manticore_check");
+
         Pass::call(design, "flatten");
 		Pass::call(design, "manticore_meminit");
 		Pass::call(design, "opt");
@@ -112,7 +112,7 @@ struct Manticore : public Pass {
 		Pass::call(design, "manticore_opt_replicate");
 		if (!cfg.no_check)
 			Pass::call(design, "manticore_check");
-		Pass::call(design, stringf("manticore_writer %s", cfg.out.value.c_str()));
+		// Pass::call(design, stringf("manticore_writer %s", cfg.out.value.c_str()));
 
 	}
 
