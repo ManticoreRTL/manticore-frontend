@@ -136,10 +136,12 @@ struct ManticoreDff : public Pass {
 			if (cell->type == ID($dff)) {
 				SigSpec q_sig = cell->getPort(ID::Q);
 				Const init = initvals(q_sig);
-				cell->set_const_attribute(ID::INIT, init);
-				log("Setting %s.%s.%s (port=%s, net=%s) to %s.\n",
-					log_id(mod), log_id(cell), log_id(ID::INIT),
-								log_id(ID::Q), log_signal(q_sig), log_const(init));
+				if (std::any_of(init.bits.begin(), init.bits.end(), [](State s) { return s != State::Sx; })) {
+
+					cell->set_const_attribute(ID::INIT, init);
+					log("Setting %s.%s.%s (port=%s, net=%s) to %s.\n", log_id(mod), log_id(cell), log_id(ID::INIT), log_id(ID::Q),
+					    log_signal(q_sig), log_const(init));
+				}
 			}
 		}
 
