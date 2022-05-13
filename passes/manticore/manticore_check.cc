@@ -109,6 +109,9 @@ struct ManticoreCheck : public Pass {
 				}
 			}
 		}
+		if (!has_input) {
+			log_error("manticore Main module requires a single input as the clock!");
+		}
 	}
 } ManticoreCheck;
 

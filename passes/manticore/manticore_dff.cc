@@ -9,10 +9,8 @@ struct ManticoreDff : public Pass {
 	void help() override
 	{ //   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
 		log("\n");
-		log("    manticore_init [-track FILE]\n");
+		log("    manticore_dff\n");
 		log("\n");
-		log("Initialize the design with an optional list of signals to keep track of. The pass\n");
-		log("basically appends (* keep *) attributes to the requested signals so that \n");
 	}
 
 	struct Builder {

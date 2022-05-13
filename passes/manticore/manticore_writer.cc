@@ -588,14 +588,14 @@ struct ManticoreAssemblyWorker {
 				padConvert(cell->getPort(ID::A), maxWidth()),
 				padConvert(cell->getPort(ID::B), maxWidth())
 			);
-		} else if (cell->type = ID($not)) {
+		} else if (cell->type == ID($not)) {
 			auto width = cell->getParam(ID::A_WIDTH);
 			log_assert(width == cell->getParam(ID::Y_WIDTH).as_int());
-			instr.XOR(
-				outConvert(cell->getPort(ID::Y)),
-				convert(cell->getPort(ID::A)),
-				def_const.mk(Const(State::S1, width))
-			);
+			// instr.XOR(
+			// 	outConvert(cell->getPort(ID::Y)),
+			// 	convert(cell->getPort(ID::A)),
+			// 	// def_const.mk(Const(State::S1, width))
+			// );
 		}
 	}
 	void generate()
