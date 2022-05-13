@@ -5,4 +5,5 @@ OBJS += passes/manticore/manticore_check.o
 OBJS += passes/manticore/manticore_dff.o
 OBJS += passes/manticore/manticore_writer.o
 OBJS += passes/manticore/manticore_opt_replicate.o
+OBJS += passes/manticore/manticore_subword.o
 OBJS += passes/manticore/manticore.o

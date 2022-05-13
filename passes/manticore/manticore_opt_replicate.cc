@@ -87,10 +87,15 @@ struct MantcoreOptimizeBitReplication : public Pass {
 			SigSpec new_rhs;
 			for (const auto &pat : patterns) {
 				if (pat.width > 1) {
-					auto new_wire = mod->addWire(freshName("rep_wire"), pat.width);
-					mod->addMux(freshName("rep_mux"), SigSpec(State::S0, pat.width), SigSpec(State::S1, pat.width),
-						    SigSpec(pat.bit), SigSpec(new_wire));
-					new_rhs.append(new_wire);
+					if (pat.bit.is_wire()) {
+						auto new_wire = mod->addWire(freshName("rep_wire"), pat.width);
+						mod->addMux(freshName("rep_mux"), SigSpec(State::S0, pat.width), SigSpec(State::S1, pat.width),
+								SigSpec(pat.bit), SigSpec(new_wire));
+						new_rhs.append(new_wire);
+					} else {
+						// bit is constant
+						new_rhs.append(SigSpec(pat.bit.data, pat.width));
+					}
 				} else {
 					// single-bit not repeated
 					new_rhs.append(pat.bit);
