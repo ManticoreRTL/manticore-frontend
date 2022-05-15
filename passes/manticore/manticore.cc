@@ -113,6 +113,7 @@ struct Manticore : public Pass {
 		Pass::call(design, "manticore_subword");
 		if (!cfg.no_check)
 			Pass::call(design, "manticore_check");
+		Pass::call(design, stringf("write_rtlil %s.rtl", cfg.out.value.c_str()));
 		Pass::call(design, stringf("manticore_writer %s", cfg.out.value.c_str()));
 
 	}
