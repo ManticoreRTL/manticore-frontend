@@ -143,6 +143,10 @@ struct InstructionBuilder {
 		}
 		builder << def_case << ";" << std::endl;
 	}
+	inline void MUX(const std::string &rd, const std::string &sel, const std::string &rfalse, const std::string &rtrue)
+	{
+		builder << "MUX " << rd << ", " << sel << ", " << rfalse << ", " << rtrue << std::endl;
+	}
 #define BINOP_DEF(op)                                                                                                                                \
 	inline void op(const std::string &rd, const std::string &rs1, const std::string &rs2)                                                        \
 	{                                                                                                                                            \
@@ -257,25 +261,25 @@ struct ManticoreAssemblyWorker {
 			log("Chunk size %d\n", GetSize(chunks));
 
 			std::string prev_res = convert(chunks.front());
-            int pos = chunks.front().width;
-            SigSpec concat_sig = SigSpec(chunks.front());
+			int pos = chunks.front().width;
+			SigSpec concat_sig = SigSpec(chunks.front());
 			// create concatenation
-			for (int cix = 1; cix < GetSize(chunks); cix ++) {
-                concat_sig.append(chunks[cix]);
-                int concat_width = concat_sig.size();
-                auto op1 = def_wire.temp(concat_width);
-                auto op2 = def_wire.temp(concat_width);
+			for (int cix = 1; cix < GetSize(chunks); cix++) {
+				concat_sig.append(chunks[cix]);
+				int concat_width = concat_sig.size();
+				auto op1 = def_wire.temp(concat_width);
+				auto op2 = def_wire.temp(concat_width);
 
-                instr.PADZERO(op1, prev_res, concat_width);
-                instr.PADZERO(op2, convert(chunks[cix]), concat_width);
-                auto shifted = def_wire.temp(concat_width);
-                instr.SLL(shifted, op2, def_const.get(Const(pos, 32)));
-                auto this_res = def_wire.temp(concat_width);
-                instr.OR(this_res, shifted, op1);
-                const SigSpec this_sig = concat_sig;
-                available_sigs.emplace(this_sig, this_res);
-                prev_res = this_res;
-                pos = concat_width;
+				instr.PADZERO(op1, prev_res, concat_width);
+				instr.PADZERO(op2, convert(chunks[cix]), concat_width);
+				auto shifted = def_wire.temp(concat_width);
+				instr.SLL(shifted, op2, def_const.get(Const(pos, 32)));
+				auto this_res = def_wire.temp(concat_width);
+				instr.OR(this_res, shifted, op1);
+				const SigSpec this_sig = concat_sig;
+				available_sigs.emplace(this_sig, this_res);
+				prev_res = this_res;
+				pos = concat_width;
 			}
 
 			return prev_res;
@@ -466,13 +470,148 @@ struct ManticoreAssemblyWorker {
 		}
 	}
 
+#define UNARY_OP_HEADER                                                                                                                              \
+	auto a_width = cell->getParam(ID::A_WIDTH).as_int();                                                                                         \
+	auto y_width = cell->getParam(ID::Y_WIDTH).as_int();                                                                                         \
+	auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();                                                                                      \
+	auto a_name = convert(cell->getPort(ID::A));                                                                                                 \
+	auto y_name = convert(cell->getPort(ID::Y));
+
 	// convert a cell into instructions
 	void convert(Cell *cell)
 	{
 
 		auto checker = CellSanityChecker(cell);
 		auto maxWidth = [cell]() { return std::max(cell->getParam(ID::A_WIDTH).as_int(), cell->getParam(ID::B_WIDTH).as_int()); };
-		if (cell->type == ID($add)) {
+
+		if (cell->type == ID($not)) {
+			auto width = cell->getParam(ID::A_WIDTH).as_int();
+			log_assert(width == cell->getParam(ID::Y_WIDTH).as_int());
+			instr.XOR(convert(cell->getPort(ID::Y)), convert(cell->getPort(ID::A)), def_const.get(Const(State::S1, width)));
+		} else if (cell->type == ID($pos)) {
+			UNARY_OP_HEADER
+			if (a_signed && a_width < y_width) {
+				// sign extend A
+				auto a_sign = def_wire.temp(1);
+				instr.SLICE(a_sign, a_name, 0, 1);
+				auto extension = def_wire.temp(y_width);
+				std::vector<State> extension_mask;
+				for (int i = 0; i < a_width; i++)
+					extension_mask.push_back(State::S0);
+				for (int i = 0; i < (y_width - a_width); i++)
+					extension_mask.push_back(State::S1);
+
+				instr.MUX(extension, a_sign, def_const.get(Const(State::S0, y_width)), def_const.get(Const(extension_mask)));
+				auto padded = def_wire.temp(y_width);
+				instr.PADZERO(padded, a_name, y_width);
+				instr.OR(y_name, padded, extension);
+			} else if (a_width > y_width) {
+				instr.SLICE(y_name, a_name, 0, y_width);
+			} else {
+				instr.MOV(y_name, a_name);
+			}
+
+		} else if (cell->type == ID($neg)) {
+			UNARY_OP_HEADER
+			log_assert(a_width == y_width);
+			auto bits_flipped = def_wire.temp(a_width);
+			instr.XOR(bits_flipped, a_name, def_const.get(Const(State::S1, a_width)));
+			inst.ADD(y_name, bits_flipped, def_const.get(Const(1, a_width)));
+
+		} else if (cell->type == ID($reduce_and)) {
+			UNARY_OP_HEADER
+			auto all_ones = def_const.get(Const(State::S1, a_width));
+			log_assert(!a_signed);
+			if (y_width == 1) {
+				instr.SEQ(y_name, a_name, all_ones);
+			} else {
+				auto b0 = def_wire.temp(1);
+				instr.SEQ(b0, a_name, all_ones);
+				instr.PADZERO(y_name, b0, y_width);
+			}
+		} else if (cell->type == ID($reduce_or) || cell->type == ID($reduce_bool)) {
+			UNARY_OP_HEADER
+			log_assert(!a_signed);
+			auto b0 = def_wire.temp(1);
+			instr.SEQ(b0, a_name, def_const.get(State(State::S0, a_width)));
+			auto const_true = def_const.get(Const(State::S1, 1));
+
+			if (y_width == 1) {
+				instr.XOR(y_name, b0, const_true);
+			} else {
+				auto notb0 = def_wire.temp(1);
+				instr.XOR(notb0, b0, const_true);
+				instr.PADZERO(y_name, notb0, y_width);
+			}
+
+		} else if (cell->type == ID($reduce_xor)) {
+
+			UNARY_OP_HEADER
+
+			log_assert(!a_signed);
+			auto prevres = def_wire.temp(1);
+			instr.SLICE(prevres, a_name, 0, 1);
+
+			for (int i = 1; i < a_width; i++) {
+
+				auto thisbit = def_wire.temp(1);
+				instr.SLICE(thisbit, a_name, i, 1);
+				auto thisres = def_wire.temp(1);
+				instr.XOR(thisres, prevres, thisbit);
+				prevres = thisres;
+			}
+			if (y_width == 1)
+				instr.MOV(y_name, prevres);
+			else
+				instr.PADZERO(y_name, prevres, y_width);
+
+		} else if (cell->type == ID($reduce_xnor)) {
+
+			UNARY_OP_HEADER
+			auto prevbit = def_wire.temp(1);
+			auto prevres = def_wire.temp(1);
+			auto const_true = def_const.get(Const(State::S1, 1));
+			instr.SLICE(prevbit, a_name, 0, 1);
+			instr.XOR(prevres, prevbit, const_true);
+
+			for (int i = 0; i < a_width; i++) {
+				auto thisbit = def_wire.temp(1);
+				instr.SLICE(thisbit, a_name, i, 1);
+				auto temp = def_wire.temp(1);
+				instr.XOR(temp, thisbit, prevres);
+				auto thisres = def_wire.temp(1);
+				instr.XOR(thisres, temp, const_true);
+				prevres = thisres;
+			}
+			if (y_width == 1) {
+				instr.MOV(y_name, prevres);
+			} else {
+				instr.PADZERO(y_name, prevres, y_width);
+			}
+
+		} else if (cell->type == ID($logic_not)) {
+			UNARY_OP_HEADER
+			log_assert(!a_signed);
+			log_assert(y_width == 1);
+			instr.SEQ(y_name, a_name, def_const.get(Const(State::S0, a_width)));
+		} // end of unary ops
+		  // begin binary ops
+		else if (cell->type == ID($and)) {
+			checker.assertSignedOperandsRequireEqualWidth();
+			checker.assertEqualSigns();
+			auto w = maxWidth();
+			instr.AND(convert(cell->getPort(ID::Y)), padConvert(cell->getPort(ID::A), w), padConvert(cell->getPort(ID::B), w));
+		} else if (cell->type == ID($or)) {
+			checker.assertSignedOperandsRequireEqualWidth();
+			checker.assertEqualSigns();
+			auto w = maxWidth();
+			instr.OR(convert(cell->getPort(ID::Y)), padConvert(cell->getPort(ID::A), w), padConvert(cell->getPort(ID::B), w));
+		} else if (cell->type == ID($xor)) {
+			checker.assertSignedOperandsRequireEqualWidth();
+			checker.assertEqualSigns();
+			auto w = maxWidth();
+			instr.XOR(convert(cell->getPort(ID::Y)), padConvert(cell->getPort(ID::A), w), padConvert(cell->getPort(ID::B), w));
+		} else if (cell->type == ID($add)) {
 			checker.assertSignedOperandsRequireEqualWidth();
 			// checker.assertEqualWidth(); need not to hold if one operand is a constant
 			checker.assertEqualSigns();
@@ -521,30 +660,10 @@ struct ManticoreAssemblyWorker {
 			mkSeq(cell, equal);
 			checker.assertBoolOutput();
 			instr.OR(convert(cell->getPort(ID::Y)), greater, equal);
-		} else if (cell->type == ID($or)) {
-			checker.assertOutputIsMaxWidth();
-			// auto w = maxWidth();
-			instr.OR(convert(cell->getPort(ID::Y)), padConvert(cell->getPort(ID::A), maxWidth()),
-				 padConvert(cell->getPort(ID::B), maxWidth()));
-		} else if (cell->type == ID($and)) {
-			checker.assertOutputIsMaxWidth();
-			// auto w = maxWidth();
-			instr.AND(convert(cell->getPort(ID::Y)), padConvert(cell->getPort(ID::A), maxWidth()),
-				  padConvert(cell->getPort(ID::B), maxWidth()));
-		} else if (cell->type == ID($xor)) {
-			checker.assertOutputIsMaxWidth();
-			// auto w = maxWidth();
-			instr.XOR(convert(cell->getPort(ID::Y)), padConvert(cell->getPort(ID::A), maxWidth()),
-				  padConvert(cell->getPort(ID::B), maxWidth()));
-		} else if (cell->type == ID($not)) {
-			auto width = cell->getParam(ID::A_WIDTH);
-			log_assert(width == cell->getParam(ID::Y_WIDTH).as_int());
-			// instr.XOR(
-			// 	outConvert(cell->getPort(ID::Y)),
-			// 	convert(cell->getPort(ID::A)),
-			// 	// def_const.mk(Const(State::S1, width))
-			// );
 		}
+
+		// Unary operators
+		else
 	}
 	void generate()
 	{
@@ -562,8 +681,6 @@ struct ManticoreAssemblyWorker {
 			instr.MOV(convert(con.first), convert(con.second));
 		}
 	}
-
-
 
 	void emit()
 	{
