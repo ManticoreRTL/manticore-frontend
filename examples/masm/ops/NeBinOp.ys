@@ -1,1 +1,0 @@
-read_verilog -sv NeBinOp.v; write_rtlil NeBinOp.rtl; test_autotb NeBinOp_tb.v

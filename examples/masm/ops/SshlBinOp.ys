@@ -1,1 +1,0 @@
-read_verilog -sv SshlBinOp.v; write_rtlil SshlBinOp.rtl; test_autotb SshlBinOp_tb.v

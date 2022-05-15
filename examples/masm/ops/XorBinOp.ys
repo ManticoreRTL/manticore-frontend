@@ -1,1 +1,0 @@
-read_verilog -sv XorBinOp.v; write_rtlil XorBinOp.rtl; test_autotb XorBinOp_tb.v

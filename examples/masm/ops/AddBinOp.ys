@@ -1,1 +1,0 @@
-read_verilog -sv AddBinOp.v; write_rtlil AddBinOp.rtl; test_autotb AddBinOp_tb.v
