@@ -1,0 +1,1 @@
+read_verilog -sv OrBinOp.v; write_rtlil OrBinOp.rtl; test_autotb OrBinOp_tb.v

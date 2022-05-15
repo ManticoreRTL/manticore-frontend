@@ -1,0 +1,1 @@
+read_verilog -sv LtBinOp.v; write_rtlil LtBinOp.rtl; test_autotb LtBinOp_tb.v

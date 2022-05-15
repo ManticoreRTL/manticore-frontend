@@ -1,0 +1,1 @@
+read_verilog -sv ShrBinOp.v; write_rtlil ShrBinOp.rtl; test_autotb ShrBinOp_tb.v

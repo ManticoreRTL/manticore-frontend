@@ -1,0 +1,1 @@
+read_verilog -sv NexBinOp.v; write_rtlil NexBinOp.rtl; test_autotb NexBinOp_tb.v

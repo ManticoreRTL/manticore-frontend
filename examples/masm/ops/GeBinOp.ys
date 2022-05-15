@@ -1,0 +1,1 @@
+read_verilog -sv GeBinOp.v; write_rtlil GeBinOp.rtl; test_autotb GeBinOp_tb.v

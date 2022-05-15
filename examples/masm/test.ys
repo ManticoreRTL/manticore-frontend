@@ -1,0 +1,1 @@
+read_verilog -sv meminit.sv; write_rtlil meminit0.rtl; manticore -top MemoryInitTest -out meminit.masm -no-check;  write_rtlil meminit.rtl

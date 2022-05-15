@@ -1,0 +1,1 @@
+read_verilog -sv SubBinOp.v; write_rtlil SubBinOp.rtl; test_autotb SubBinOp_tb.v

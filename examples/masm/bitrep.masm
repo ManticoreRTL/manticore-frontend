@@ -1,0 +1,18 @@
+.prog:
+.proc main:
+// wires 
+.wire \d 3
+.wire \b 1
+.wire \a 1
+.wire %t_0 2
+.wire %t_1 3
+.wire %t_2 2
+.wire %t_3 3
+.wire \e 3
+.wire $rep_wire$ 3
+.wire \c 4
+.wire %t_4 2
+.wire $rep_wire$_1 2
+.wire %t_5 4
+
+// constants

@@ -1,0 +1,1 @@
+read_verilog -sv EqxBinOp.v; write_rtlil EqxBinOp.rtl; test_autotb EqxBinOp_tb.v

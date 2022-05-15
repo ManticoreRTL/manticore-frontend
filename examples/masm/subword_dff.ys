@@ -1,0 +1,3 @@
+read_verilog -sv subword_dff.sv;
+manticore -top SubwordDff -out subword_dff.masm -no-check;
+write_rtlil subword_dff.rtl

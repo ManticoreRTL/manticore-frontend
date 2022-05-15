@@ -1,0 +1,6 @@
+read_verilog -sv  -noblackbox examples/masm/mips32.sv;
+proc;
+opt_clean;
+hierarchy -top TestVerilator -check
+write_verilog examples/masm/out/mips32.out.sv;
+write_rtlil examples/masm/out/mips32.out.rtlil;

@@ -1,0 +1,1 @@
+read_verilog -sv LandBinOp.v; write_rtlil LandBinOp.rtl; test_autotb LandBinOp_tb.v

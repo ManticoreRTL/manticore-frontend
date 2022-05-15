@@ -1,0 +1,1 @@
+read_verilog -sv bitrep.sv; manticore -top BitReplicate -out bitrep.masm -no-check; write_rtlil bitrep.rtl
