@@ -1,5 +1,6 @@
 #include "kernel/modtools.h"
 #include "kernel/yosys.h"
+#include "passes/manticore/manticore_clock.h"
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
@@ -17,62 +18,6 @@ struct ManticoreCheck : public Pass {
 		log("\n");
 	}
 
-	struct OptionalClock {
-		Wire *clk;
-		bool polarity;
-		OptionalClock() : clk(nullptr), polarity(false) {}
-		OptionalClock(Wire *clk, bool p) : clk(clk), polarity(p) {}
-
-		inline bool operator==(const OptionalClock &other) const { return polarity == other.polarity && clk == other.clk; }
-		inline bool operator!=(const OptionalClock &other) const { return !operator==(other); }
-		inline bool nonEmpty() const { return clk != nullptr; }
-		inline bool empty() const { return clk == nullptr; }
-	};
-	OptionalClock checkClock(Design *design, Module *mod, const OptionalClock &assumed_clock) const
-	{
-
-		SigMap sigmap(mod);
-		OptionalClock found_clk;
-		if (assumed_clock.nonEmpty()) {
-			found_clk = OptionalClock(sigmap(SigSpec(assumed_clock.clk)).as_wire(), assumed_clock.polarity);
-		}
-		auto cellClock = [&sigmap](const Cell *cell) -> OptionalClock {
-			auto s = sigmap(cell->getPort(ID::CLK));
-			auto p = cell->getParam(ID::CLK_POLARITY).as_bool();
-			return OptionalClock(s.as_wire(), p);
-		};
-		for (const auto &cell : mod->cells()) {
-			if (cell->type == ID($dff)) {
-				auto cell_clk = cellClock(cell);
-				if (found_clk.empty()) {
-					found_clk = cell_clk;
-				} else if (found_clk != cell_clk) {
-					log_error("The found clock %s is different from the used clock %s in cell %s in module %s\n",
-						  RTLIL::id2cstr(found_clk.clk->name), RTLIL::id2cstr(cell_clk.clk->name), RTLIL::id2cstr(cell->name),
-						  RTLIL::id2cstr(mod->name));
-				}
-			} else if (cell->type.in(ID($adff), ID($adffe), ID($dffsr), ID($dffsre), ID($dffs))) {
-				log_error("asynchronous cell %s in module %s not supported!", RTLIL::id2cstr(cell->name), RTLIL::id2cstr(mod->name));
-			} else if (cell->type.in(ID($dffe), ID($dffsr), ID($dffsre))) {
-				log_error("built-in reset/enable dff %s cell in module %s need to be converted to $dff!", RTLIL::id2cstr(cell->name),
-					  RTLIL::id2cstr(mod->name));
-
-			} else if (cell->type.in(ID($dlatch), ID($adlatch), ID($dlatchsr), ID($adffe), ID($aldff), ID($aldffe))) {
-				log_error("latch cell %s in module %s is not supported!", RTLIL::id2cstr(cell->name), RTLIL::id2cstr(mod->name));
-			} else {
-				auto user_mod_found = design->module(cell->type);
-				if (user_mod_found != NULL) {
-					auto other_found_clock = checkClock(design, user_mod_found, found_clk);
-					if (found_clk.nonEmpty() && other_found_clock != found_clk) {
-						log_error("detected a different clock in instance %s of module %s", RTLIL::id2cstr(cell->name),
-							  RTLIL::id2cstr(mod->name));
-					}
-				}
-			}
-		}
-
-		return found_clk;
-	}
 	void execute(std::vector<std::string>, Design *design) override
 	{
 		log_header(design, "Executing Manticore Checker Pass\n");
@@ -82,7 +27,7 @@ struct ManticoreCheck : public Pass {
 			log_error("Expected a top module!");
 		}
 
-		auto found_clk = checkClock(design, top, OptionalClock());
+		auto found_clk = manticore::checkClock(design, top, manticore::OptionalClock());
 
 		if (found_clk.empty()) {
 			log_error("Could not detect the clock!");
