@@ -78,23 +78,23 @@ def generate(name, op):
 if __name__ == "__main__":
 
 
-    generate("AndBinOp", "&")
-    generate("OrBinOp", "|")
-    generate("XorBinOp", "^")
-    generate("XnorBinOp", "~^")
+    # generate("AndBinOp", "&")
+    # generate("OrBinOp", "|")
+    # generate("XorBinOp", "^")
+    # generate("XnorBinOp", "~^")
 
-    generate("ShlBinOp", "<<")
-    generate("SshlBinOp", "<<<")
+    # generate("ShlBinOp", "<<")
+    # generate("SshlBinOp", "<<<")
 
-    generate("ShrBinOp", ">>")
-    generate("SshrBinOp", ">>>")
+    # generate("ShrBinOp", ">>")
+    # generate("SshrBinOp", ">>>")
 
-    generate("LandBinOp", "&&")
-    generate("LorBinOp", "||")
+    # generate("LandBinOp", "&&")
+    # generate("LorBinOp", "||")
 
 
-    generate("EqxBinOp", "===")
-    generate("NexBinOp", "!==")
+    # generate("EqxBinOp", "===")
+    # generate("NexBinOp", "!==")
 
 
     generate("LtBinOp", "<")
@@ -104,8 +104,8 @@ if __name__ == "__main__":
     generate("GtBinOp", ">")
     generate("GeBinOp", ">=")
 
-    generate("AddBinOp", "+")
-    generate("SubBinOp", "-")
+    # generate("AddBinOp", "+")
+    # generate("SubBinOp", "-")
 
 
 

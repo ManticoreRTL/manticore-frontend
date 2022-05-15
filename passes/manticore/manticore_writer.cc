@@ -4,8 +4,26 @@
 #include <fstream>
 #include <functional>
 #include <queue>
+#include <regex>
+
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
+
+static int bitLength(const unsigned int value)
+{
+	unsigned int v = value;
+	if (v == 0) {
+		return 1;
+	} else {
+
+		unsigned int len = 0;
+		while (v > 0) {
+			len++;
+			v >>= 1;
+		}
+		return len;
+	}
+}
 struct NameBuilder {
 	// const std::string prefix;
 	Module *mod;
@@ -29,6 +47,7 @@ struct WireBuilder {
 	NameBuilder namer;
 	dict<Wire *, std::string> wires;
 	dict<Cell *, std::pair<std::string, std::string>> states;
+	dict<RTLIL::Memory *, std::string> memories;
 
       public:
 	WireBuilder(Module *m) : namer(m) {}
@@ -42,6 +61,12 @@ struct WireBuilder {
 	inline std::string get(Wire *w)
 	{
 		if (!wires.count(w)) {
+
+			if (w->has_attribute(ID::hdlname)) {
+				auto dotted_name = std::regex_replace(w->get_string_attribute(ID::hdlname), std::regex(" "), ".");
+
+				defs << "@DEBUGSYMBOL [ symbol = \"" << dotted_name << "\" ]" << std::endl;
+			}
 			defs << ".wire " << w->name.str() << " " << w->width << std::endl;
 			wires.emplace(w, w->name.str());
 		}
@@ -87,6 +112,27 @@ struct WireBuilder {
 		tryCreateState(dff);
 		return states[dff].second;
 	}
+
+	inline std::string getMemory(RTLIL::Memory *mem)
+	{
+
+		if (memories.count(mem) == 0) {
+
+			defs << "@MEMBLOCK [block = \"" << mem->name.str() << "\", width = " << mem->width << ", capacity = " << mem->size << "]"
+			     << std::endl;
+			if (mem->has_attribute(ID::MEM_INIT_FILE)) {
+				defs << "@MEMINIT [ file = \"" << mem->get_string_attribute(ID::MEM_INIT_FILE) << "\", width = " << mem->width
+				     << ", count = " << mem->size << "]" << std::endl;
+			}
+
+			std::string mem_name = mem->name.str();
+
+			defs << ".mem " << mem_name << " " << bitLength(mem->size - 1) << std::endl;
+
+			memories[mem] = mem_name;
+		}
+		return memories[mem];
+	}
 };
 
 struct ConstBuilder {
@@ -118,7 +164,7 @@ struct InstructionBuilder {
 	InstructionBuilder() {}
 
 	inline void LOAD(const std::string &rd, const std::string &base) { builder << "LLD " << rd << ", " << base << "[0];" << std::endl; }
-	inline void STORE(const std::string &rs, const std::string &base) { builder << "LST " << rs << ", " << base << "[0];" << std::endl; }
+	inline void STORE(const std::string &rs, const std::string &base, const std::string& pred) { builder << "LST " << rs << ", " << base << "[0], " << pred << ";" << std::endl; }
 	inline void PADZERO(const std::string &rd, const std::string &rs, int width)
 	{
 		builder << "PADZERO " << rd << ", " << rs << ", " << width << ";" << std::endl;
@@ -414,20 +460,20 @@ struct ManticoreAssemblyWorker {
 		auto checker = CellSanityChecker(cell);
 		checker.assertEqualSigns();
 		checker.assertSignedOperandsRequireEqualWidth();
-		auto y_name = res;
+
 		if (checker.equalWidthPorts()) {
 			// note that the A and B might be negative, but that is OK
-			instr.SEQ(y_name, convert(cell->getPort(ID::A)), convert(cell->getPort(ID::B)));
+			instr.SEQ(res, convert(cell->getPort(ID::A)), convert(cell->getPort(ID::B)));
 		} else {
 			// ensure both operands are unsigned
 			checker.assertBothUnsigned();
 			auto max_width = std::max(cell->getParam(ID::A_WIDTH).as_int(), cell->getParam(ID::B_WIDTH).as_int());
-			instr.SEQ(y_name, padConvert(cell->getPort(ID::A), max_width), padConvert(cell->getPort(ID::B), max_width));
+			instr.SEQ(res, padConvert(cell->getPort(ID::A), max_width), padConvert(cell->getPort(ID::B), max_width));
 		}
 	}
 
-	inline void mkSlts(const std::string &res, int a_width, int b_width, bool a_signed, bool b_signed, const SigSpec &a, const SigSpec &b,
-			   Cell *cell)
+	inline void mkSlts(Cell *cell, const std::string &res, int a_width, int b_width, bool a_signed, bool b_signed, const SigSpec &a,
+			   const SigSpec &b)
 	{
 
 		// We implement less than as a subtraction and a test because we can
@@ -446,13 +492,14 @@ struct ManticoreAssemblyWorker {
 		// a < b to false.
 		// 2. Suppose 32 bit signed numbers. Here because the sign is already encoded
 		// in the operands, we need not to zero/sign extend them.
+
 		auto mkZero = [this](int width) { return def_const.get(Const(State::S0, width)); };
 		if (a_signed != b_signed) {
-			log_error("Expected equal signs in cell %s of type %s\n", RTLIL::id2cstr(cell->name), RTLIL::id2cstr(cell->type));
+			log_error("Expected equal signs in cell %s of type %s\n", log_id(cell->name), log_id(cell->type));
 		}
 		if (a_signed) {
 			if (a_width != b_width) {
-				log_error("Expected equal width in cell %s of type %s\n", RTLIL::id2cstr(cell->name), RTLIL::id2cstr(cell->type));
+				log_error("Expected equal width in cell %s of type %s\n", log_id(cell->name), log_id(cell->type));
 			}
 
 			// easier case, we do not need to sign extend the operands
@@ -516,7 +563,7 @@ struct ManticoreAssemblyWorker {
 			log_assert(a_width == y_width);
 			auto bits_flipped = def_wire.temp(a_width);
 			instr.XOR(bits_flipped, a_name, def_const.get(Const(State::S1, a_width)));
-			inst.ADD(y_name, bits_flipped, def_const.get(Const(1, a_width)));
+			instr.ADD(y_name, bits_flipped, def_const.get(Const(1, a_width)));
 
 		} else if (cell->type == ID($reduce_and)) {
 			UNARY_OP_HEADER
@@ -533,7 +580,7 @@ struct ManticoreAssemblyWorker {
 			UNARY_OP_HEADER
 			log_assert(!a_signed);
 			auto b0 = def_wire.temp(1);
-			instr.SEQ(b0, a_name, def_const.get(State(State::S0, a_width)));
+			instr.SEQ(b0, a_name, def_const.get(Const(State::S0, a_width)));
 			auto const_true = def_const.get(Const(State::S1, 1));
 
 			if (y_width == 1) {
@@ -568,6 +615,8 @@ struct ManticoreAssemblyWorker {
 		} else if (cell->type == ID($reduce_xnor)) {
 
 			UNARY_OP_HEADER
+			log_assert(!a_signed);
+
 			auto prevbit = def_wire.temp(1);
 			auto prevres = def_wire.temp(1);
 			auto const_true = def_const.get(Const(State::S1, 1));
@@ -622,48 +671,177 @@ struct ManticoreAssemblyWorker {
 
 			instr.SUB(convert(cell->getPort(ID::Y)), convert(cell->getPort(ID::A)), convert(cell->getPort(ID::B)));
 		} else if (cell->type == ID($eq)) {
-			mkSeq(cell, convert(cell->getPort(ID::Y)));
+
+			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
+			auto y_name = convert(cell->getPort(ID::Y));
+			if (y_width == 1) {
+				mkSeq(cell, y_name);
+			} else {
+				auto tmp = def_wire.temp(1);
+				mkSeq(cell, tmp);
+				instr.PADZERO(y_name, tmp, y_width);
+			}
+
 		} else if (cell->type == ID($ne)) {
-			auto temp_name = def_wire.temp(1);
-			mkSeq(cell, temp_name);
-			instr.XOR(convert(cell->getPort(ID::Y)), temp_name, def_const.get(Const(State::S0)));
-			// same as $eq, except with negate the results (XOR with false is basically not)
+			// same as $eq, except with negate the results (XOR with true is basically not)
+			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
+			auto y_name = convert(cell->getPort(ID::Y));
+			auto seq_res = def_wire.temp(1);
+			mkSeq(cell, seq_res);
+			auto const_true = def_const.get(Const(State::S1, 1));
+			if (y_width == 1) {
+				instr.XOR(y_name, seq_res, const_true);
+			} else {
+				auto ne_res = def_wire.temp(1);
+				instr.XOR(ne_res, seq_res, const_true);
+				instr.PADZERO(y_name, ne_res, y_width);
+			}
 		} else if (cell->type == ID($lt)) {
 
-			mkSlts(convert(cell->getPort(ID::Y)), cell->getParam(ID::A_WIDTH).as_int(), cell->getParam(ID::B_WIDTH).as_int(),
-			       cell->getParam(ID::A_SIGNED).as_bool(), cell->getParam(ID::B_SIGNED).as_bool(), cell->getPort(ID::A),
-			       cell->getPort(ID::B), cell);
+			auto y_name = convert(cell->getPort(ID::Y));
+			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
+			auto a_sig = cell->getPort(ID::A);
+			auto b_sig = cell->getPort(ID::B);
+			auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
+			auto b_signed = cell->getParam(ID::B_SIGNED).as_bool();
+
+			auto a_width = cell->getParam(ID::A_WIDTH).as_int();
+			auto b_width = cell->getParam(ID::B_WIDTH).as_int();
+
+			if (y_width == 1) {
+				mkSlts(cell, y_name, a_width, b_width, a_signed, b_signed, a_sig, b_sig);
+			} else {
+				auto tmp = def_wire.temp(1);
+				mkSlts(cell, tmp, a_width, b_width, a_signed, b_signed, a_sig, b_sig);
+				instr.PADZERO(y_name, tmp, y_width);
+			}
+
 		} else if (cell->type == ID($gt)) {
-			// just like $lt, with operands swapped
-			mkSlts(convert(cell->getPort(ID::Y)), cell->getParam(ID::B_WIDTH).as_int(), cell->getParam(ID::A_WIDTH).as_int(),
-			       cell->getParam(ID::B_SIGNED).as_bool(), cell->getParam(ID::A_SIGNED).as_bool(), cell->getPort(ID::B),
-			       cell->getPort(ID::A), cell);
+			auto y_name = convert(cell->getPort(ID::Y));
+			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
+			auto a_sig = cell->getPort(ID::A);
+			auto b_sig = cell->getPort(ID::B);
+			auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
+			auto b_signed = cell->getParam(ID::B_SIGNED).as_bool();
+
+			auto a_width = cell->getParam(ID::A_WIDTH).as_int();
+			auto b_width = cell->getParam(ID::B_WIDTH).as_int();
+			if (y_width == 1) {
+				mkSlts(cell, y_name, b_width, a_width, b_signed, a_signed, b_sig, a_sig);
+			} else {
+				auto tmp = def_wire.temp(1);
+				mkSlts(cell, tmp, b_width, a_width, b_signed, a_signed, b_sig, a_sig);
+				instr.PADZERO(y_name, tmp, y_width);
+			}
+
 		} else if (cell->type == ID($le)) {
 
-			// like $le but ord with $eq
-			auto less = def_wire.temp(1);
+			auto y_name = convert(cell->getPort(ID::Y));
+			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
+			auto a_sig = cell->getPort(ID::A);
+			auto b_sig = cell->getPort(ID::B);
+			auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
+			auto b_signed = cell->getParam(ID::B_SIGNED).as_bool();
+
+			auto a_width = cell->getParam(ID::A_WIDTH).as_int();
+			auto b_width = cell->getParam(ID::B_WIDTH).as_int();
+
 			auto equal = def_wire.temp(1);
+			auto less = def_wire.temp(1);
 			mkSeq(cell, equal);
-			mkSlts(less, cell->getParam(ID::A_WIDTH).as_int(), cell->getParam(ID::B_WIDTH).as_int(),
-			       cell->getParam(ID::A_SIGNED).as_bool(), cell->getParam(ID::B_SIGNED).as_bool(), cell->getPort(ID::A),
-			       cell->getPort(ID::B), cell);
-			checker.assertBoolOutput();
-			instr.OR(convert(cell->getPort(ID::Y)), less, equal);
+			mkSlts(cell, less, a_width, b_width, a_signed, b_signed, a_sig, b_sig);
+			if (y_width == 1) {
+				instr.OR(y_name, less, equal);
+			} else {
+				auto tmp = def_wire.temp(1);
+				instr.OR(tmp, less, equal);
+				instr.PADZERO(y_name, tmp, y_width);
+			}
 
 		} else if (cell->type == ID($ge)) {
 			// like $gt ored with $eq
-			auto greater = def_wire.temp(1);
-			auto equal = def_wire.temp(1);
-			mkSlts(greater, cell->getParam(ID::B_WIDTH).as_int(), cell->getParam(ID::A_WIDTH).as_int(),
-			       cell->getParam(ID::B_SIGNED).as_bool(), cell->getParam(ID::A_SIGNED).as_bool(), cell->getPort(ID::B),
-			       cell->getPort(ID::A), cell);
-			mkSeq(cell, equal);
-			checker.assertBoolOutput();
-			instr.OR(convert(cell->getPort(ID::Y)), greater, equal);
-		}
+			auto y_name = convert(cell->getPort(ID::Y));
+			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
+			auto a_sig = cell->getPort(ID::A);
+			auto b_sig = cell->getPort(ID::B);
+			auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
+			auto b_signed = cell->getParam(ID::B_SIGNED).as_bool();
 
-		// Unary operators
-		else
+			auto a_width = cell->getParam(ID::A_WIDTH).as_int();
+			auto b_width = cell->getParam(ID::B_WIDTH).as_int();
+
+			auto equal = def_wire.temp(1);
+			auto less = def_wire.temp(1);
+			mkSeq(cell, equal);
+			mkSlts(cell, less, b_width, a_width, b_signed, a_signed, b_sig, a_sig);
+			if (y_width == 1) {
+				instr.OR(y_name, less, equal);
+			} else {
+				auto tmp = def_wire.temp(1);
+				instr.OR(tmp, less, equal);
+				instr.PADZERO(y_name, tmp, y_width);
+			}
+		} else if (cell->type == ID($mux)) {
+
+			auto a_name = convert(cell->getPort(ID::A));
+			auto b_name = convert(cell->getPort(ID::B));
+			auto y_name = convert(cell->getPort(ID::Y));
+			auto s_name = convert(cell->getPort(ID::S));
+			instr.MUX(y_name, s_name, a_name, b_name);
+
+		} else if (cell->type == ID($pmux)) {
+			auto a_name = convert(cell->getPort(ID::A));
+			auto width = cell->getParam(ID::WIDTH).as_int();
+			auto num_cases = cell->getParam(ID::S_WIDTH).as_int();
+			std::vector<std::string> cases;
+			std::vector<std::string> conditions;
+			auto data_bits = cell->getPort(ID::B).to_sigbit_vector();
+			auto cond_bits = cell->getPort(ID::S).to_sigbit_vector();
+			for (int case_ix = 0; case_ix < num_cases; case_ix++) {
+				std::vector<SigBit> case_bits;
+				for (int i = 0; i < width; i++) {
+					case_bits.push_back(data_bits[case_ix * width + i]);
+				}
+				cases.push_back(convert(SigSpec(case_bits)));
+				conditions.push_back(convert(SigSpec(cond_bits[case_ix])));
+			}
+			instr.PARMUX(convert(cell->getPort(ID::Y)), cases, a_name, conditions);
+		} else if (cell->type == ID($memrd)) {
+
+			auto data_name = convert(cell->getPort(ID::DATA));
+			log_assert(cell->getPort(ID::EN).is_fully_ones());
+			auto memid = cell->getParam(ID::MEMID).decode_string();
+			auto mem = mod->memories[memid];
+
+			auto addr_width = std::max(cell->getParam(ID::ABITS).as_int(), bitLength(mem->size - 1));
+
+			auto addr_name = convert(cell->getPort(ID::ADDR));
+
+			auto load_addr = def_wire.temp(addr_width);
+
+			instr.ADD(load_addr, def_wire.getMemory(mem), addr_name);
+			instr.LOAD(data_name, load_addr);
+
+		} else if (cell->type == ID($memwr_v2)) {
+
+			// because of the manticore_memory pass we have the guarantee
+			// that the we can use teh enable bit 0 as the enable, i.e., there
+			// are no "bit-" or "byte-" enables rather, there is a memory line
+			// enable. In other words the EN signal is a fully repeated bit pattern
+
+			auto mem = mod->memories[cell->getParam(ID::MEMID).decode_string()];
+			auto addr_bits = std::max(cell->getParam(ID::ABITS).as_int(), bitLength(mem->size - 1));
+			auto store_addr = def_wire.temp(addr_bits);
+			instr.ADD(store_addr, def_wire.getMemory(mem), convert(cell->getPort(ID::ADDR)));
+			auto en_bit = cell->getPort(ID::EN)[0];
+			auto pred_name = convert(SigSpec(en_bit));
+			instr.STORE(convert(cell->getPort(ID::DATA)), store_addr, pred_name);
+
+
+		} else {
+
+			log_error("Can handle cell type in %s.%s : %s\n", log_id(mod), log_id(cell), log_id(cell->type));
+		}
 	}
 	void generate()
 	{
