@@ -100,6 +100,7 @@ struct CellTypes
 		setup_type(ID($specify2), {ID::EN, ID::SRC, ID::DST}, pool<RTLIL::IdString>(), true);
 		setup_type(ID($specify3), {ID::EN, ID::SRC, ID::DST, ID::DAT}, pool<RTLIL::IdString>(), true);
 		setup_type(ID($specrule), {ID::EN_SRC, ID::EN_DST, ID::SRC, ID::DST}, pool<RTLIL::IdString>(), true);
+		setup_type(ID($manticore), {ID::A, ID::B, ID::EN}, pool<RTLIL::IdString>());
 	}
 
 	void setup_internals_eval()

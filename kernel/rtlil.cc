@@ -1815,15 +1815,14 @@ namespace {
 
 				param(ID::ORDER);
 				param(ID::FMT);
-				auto num_args = param(ID::VAR_ARG_NUM);
-				for (int i = 0; i < num_args; i++) {
-					auto VA_WIDTH = IdString(stringf("\\VA_WIDTH_%d", i));
-					auto VA = IdString(stringf("\\VA_%d", i));
-					auto w = param(VA_WIDTH);
-					port(VA, w);
-				}
+				param(ID::VAR_ARG_NUM);
+				param(ID::VAR_ARG_SIZE);
+				param(ID::B_WIDTH);
+				param(ID::TYPE);
+				port(ID::B, cell->getParam(ID::B_WIDTH).as_int());
 				port(ID::A, 1);
 				port(ID::EN, 1);
+				check_expected();
 
 				return;
 			}

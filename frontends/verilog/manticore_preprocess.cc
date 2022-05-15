@@ -137,7 +137,7 @@ DISPATCH_DEF(AST_MODULE, module)
 	log_assert(m_module.empty());
 	log_assert(m_new_nodes.empty());
 	m_module.push(module);
-	log("Handling module %s\n", module->str.c_str());
+	// log("Handling module %s\n", module->str.c_str());
 	m_defined_modules.insert(module->str);
 	// set the current module scope
 	for (auto &child : module->children) {
@@ -386,6 +386,7 @@ DISPATCH_DEF(AST_BLOCK, block)
 			delete child;
 		} else if (child->type == AST::AST_TCALL && (child->str == "$display" || child->str == "$finish" || child->str == "$stop") &&
 			   m_current_clock.size() == 1) {
+
 
 			// create a new AstNode represeting this $display/$stop/$finish with some added information
 			// e.g., $display("my message with %d var args from %s", 2, "Manticore")

@@ -1863,10 +1863,11 @@ RTLIL::SigSpec AstNode::genRTLIL(int width_hint, bool sign_hint)
 			log_assert(order.is_fully_const());
 
 			IdString cellname = stringf("%s$%s:%d$%d", celltype.c_str(), filename.c_str(), location.first_line, autoidx++);
-			check_unique_id(current_module, cellname, this, "procedural assertion");
+			check_unique_id(current_module, cellname, this, "manticore systemcall");
 			RTLIL::Cell *cell = current_module->addCell(cellname, celltype);
 			cell->setParam(ID::ORDER, order.as_const());
 			cell->setPort(ID::EN, en);
+			cell->setParam(ID::TYPE, RTLIL::Const(str));
 			if (str == "$display") {
 				const std::vector<AstNode*> var_args(children.begin() + 3, children.end());
 				cell->setParam(ID::VAR_ARG_NUM, RTLIL::Const(var_args.size()));
@@ -1874,21 +1875,35 @@ RTLIL::SigSpec AstNode::genRTLIL(int width_hint, bool sign_hint)
 				log_assert(children[2]->is_string);
 				auto fmt = RTLIL::Const(children[2]->str);
 				cell->setParam(ID::FMT, fmt);
+				auto vargs = SigSpec();
+				std::stringstream varg_size;
+				int b_width = 0;
 				for (int i = 3; i < GetSize(children); i++) {
 					RTLIL::SigSpec va = children[i]->genRTLIL();
-					cell->setParam(stringf("\\VA_WIDTH_%d", i - 3), RTLIL::Const(va.size()));
-					cell->setPort(stringf("\\VA_%d", i - 3), va);
+					vargs.append(va);
+					varg_size << va.size();
+					if (i != GetSize(children) - 1) {
+						varg_size << ",";
+					}
+					b_width += va.size();
+
 				}
+				cell->setPort(ID::B, vargs);
+				cell->setParam(ID::B_WIDTH, RTLIL::Const(b_width));
+				cell->setParam(ID::VAR_ARG_SIZE, RTLIL::Const(varg_size.str()));
 				cell->setPort(ID::A, RTLIL::Const(State::Sx));
 			} else {
 				cell->setParam(ID::VAR_ARG_NUM, RTLIL::Const(0));
+				cell->setParam(ID::VAR_ARG_SIZE, RTLIL::Const(0));
 				cell->setParam(ID::FMT, RTLIL::Const(loc_string()));
-				cell->setParam(ID::TYPE, RTLIL::Const(str));
+
 				if (str == "$assert") { // connect the assert condition signal
 					cell->setPort(ID::A, children[2]->genRTLIL());
 				} else {
 					cell->setPort(ID::A, RTLIL::Const(State::Sx));
 				}
+				cell->setPort(ID::B, RTLIL::Const(0, 1));
+				cell->setParam(ID::B_WIDTH, RTLIL::Const(1, 1));
 			}
 
 			for (auto &attr : attributes) {
