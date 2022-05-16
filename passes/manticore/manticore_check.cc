@@ -34,7 +34,7 @@ struct ManticoreCheck : public Pass {
 		}
 
 		auto sigmap = SigMap(top);
-		log("Inferred %s as the clock\n", RTLIL::id2cstr(sigmap(found_clk.clk).as_wire()->name));
+		log("Inferred %s as the clock\n", log_id(found_clk.clk));
 		auto has_input = false;
 		for (const auto &w : top->wires()) {
 			if (w->port_output) {

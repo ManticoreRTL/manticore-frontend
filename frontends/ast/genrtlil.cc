@@ -1888,10 +1888,16 @@ RTLIL::SigSpec AstNode::genRTLIL(int width_hint, bool sign_hint)
 					b_width += va.size();
 
 				}
-				cell->setPort(ID::B, vargs);
-				cell->setParam(ID::B_WIDTH, RTLIL::Const(b_width));
+				if (b_width) {
+					cell->setPort(ID::B, vargs);
+					cell->setParam(ID::B_WIDTH, RTLIL::Const(b_width));
+				} else {
+					cell->setPort(ID::B, RTLIL::Const(State::Sx));
+					cell->setParam(ID::B_WIDTH, RTLIL::Const(1));
+				}
 				cell->setParam(ID::VAR_ARG_SIZE, RTLIL::Const(varg_size.str()));
 				cell->setPort(ID::A, RTLIL::Const(State::Sx));
+
 			} else {
 				cell->setParam(ID::VAR_ARG_NUM, RTLIL::Const(0));
 				cell->setParam(ID::VAR_ARG_SIZE, RTLIL::Const(0));

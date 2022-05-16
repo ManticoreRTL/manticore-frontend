@@ -1,11 +1,11 @@
 #include "kernel/modtools.h"
 #include "kernel/yosys.h"
+#include "passes/manticore/manticore_utils.h"
 #include <algorithm>
 #include <fstream>
 #include <functional>
 #include <queue>
 #include <regex>
-
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
@@ -213,10 +213,21 @@ struct InstructionBuilder {
 	{
 		builder << "\tMUX " << rd << ", " << sel << ", " << rfalse << ", " << rtrue << ";" << std::endl;
 	}
+
+	inline void PUT(const std::string &rs, const std::string &pred) { builder << "\tPUT " << rs << ", " << pred << ";" << std::endl; }
+
+	inline void FLUSH(const std::string &fmt, const std::string &pred) { builder << "\tFLUSH \"" << fmt << "\", " << pred << ";" << std::endl; }
+
+	inline void FINISH(const std::string &pred) { builder << "\tFINISH " << pred << ";" << std::endl; }
+
+	inline void ASSERT(const std::string &pred) { builder << "\tASSERT " << pred << ";" << std::endl; }
+
+	inline void STOP(const std::string &pred) { builder << "\tSTOP " << pred << ";" << std::endl; }
+
 #define BINOP_DEF(op)                                                                                                                                \
 	inline void op(const std::string &rd, const std::string &rs1, const std::string &rs2)                                                        \
 	{                                                                                                                                            \
-		builder << "\t" << #op << " " << rd << ", " << rs1 << ", " << rs2 << ";" << std::endl;                                                       \
+		builder << "\t" << #op << " " << rd << ", " << rs1 << ", " << rs2 << ";" << std::endl;                                               \
 	}
 	BINOP_DEF(ADD) // First ALU op
 	BINOP_DEF(SUB)
@@ -253,13 +264,15 @@ struct ManticoreAssemblyWorker {
 	// we can not use SigChunk as the key because they are not hashable
 	dict<SigSpec, std::string> available_sigs;
 
+	// a place holder for systemcall. We need to first emit any other instruction
+	// and then emit system calls in correct order.
+	std::vector<Cell *> syscalls;
+
 	ManticoreAssemblyWorker(const std::string &filename, Design *design)
 	    : filename(filename), design(design), mod(design->top_module()), sigmap(design->top_module()), def_const(design->top_module()),
 	      def_wire(design->top_module())
 	{
 	}
-
-
 
 	// get the Manticore name of a chunk, this may involve creating a SLICE instruction
 	inline const std::string convert(const SigChunk &chunk)
@@ -784,6 +797,49 @@ struct ManticoreAssemblyWorker {
 				instr.OR(tmp, less, equal);
 				instr.PADZERO(y_name, tmp, y_width);
 			}
+		} else if (cell->type == ID($logic_and) || cell->type == ID($logic_or)) {
+
+			checker.assertBothUnsigned();
+
+			auto max_width = maxWidth();
+
+			auto a_zero = def_wire.temp(1);
+			auto b_zero = def_wire.temp(1);
+			auto a_nonzero = def_wire.temp(1);
+			auto b_nonzero = def_wire.temp(1);
+			auto a_name = convert(cell->getPort(ID::A));
+			auto b_name = convert(cell->getPort(ID::B));
+			auto a_width = cell->getParam(ID::A_WIDTH).as_int();
+			auto b_width = cell->getParam(ID::B_WIDTH).as_int();
+			instr.SEQ(a_zero, a_name, def_const.get(Const(State::S0, a_width)));
+			instr.SEQ(b_zero, b_name, def_const.get(Const(State::S0, b_width)));
+			auto const_true = def_const.get(Const(State::S1, 1));
+			instr.XOR(a_nonzero, a_zero, const_true);
+			instr.XOR(b_nonzero, b_zero, const_true);
+
+			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
+			auto y_name = convert(cell->getPort(ID::Y));
+
+
+			if (cell->type == ID($logic_and)) {
+				if (y_width == 1) {
+					instr.AND(y_name, a_nonzero, b_nonzero);
+				} else {
+					auto res = def_wire.temp(1);
+					instr.AND(res, a_nonzero, b_nonzero);
+					instr.PADZERO(y_name, res, y_width);
+				}
+			} else {
+				if (y_width == 1) {
+					instr.OR(y_name, a_nonzero, b_nonzero);
+				} else {
+					auto res = def_wire.temp(1);
+					instr.OR(res, a_nonzero, b_nonzero);
+					instr.PADZERO(y_name, res, y_width);
+				}
+			}
+
+
 		} else if (cell->type == ID($mux)) {
 
 			auto a_name = convert(cell->getPort(ID::A));
@@ -856,20 +912,83 @@ struct ManticoreAssemblyWorker {
 			instr.MOV(convert(cell->getPort(ID::Q)), current_state);
 			instr.MOV(next_state, convert(cell->getPort(ID::D)));
 
+		} else if (cell->type == ID($manticore)) {
+			syscalls.push_back(cell);
 		} else {
+			log_error("Can not handle cell type in %s.%s : %s\n", log_id(mod), log_id(cell), log_id(cell->type));
+		}
+	}
 
-			log_error("Can handle cell type in %s.%s : %s\n", log_id(mod), log_id(cell), log_id(cell->type));
+	void convertSyscall(Cell *cell)
+	{
+
+		std::string call_type = cell->getParam(ID::TYPE).decode_string();
+		instr.comment(cell);
+		log("Handling systemcall %s.%s of type %s\n", log_id(mod), log_id(cell), call_type.c_str());
+		if (call_type == "$display") {
+
+			auto fmt = cell->getParam(ID::FMT).decode_string();
+			auto sizes_str = cell->getParam(ID::VAR_ARG_SIZE).decode_string();
+			auto arg_size = manticore::split(sizes_str, ',');
+			auto data_bits = cell->getPort(ID::B).to_sigbit_vector();
+			auto en_sig = cell->getPort(ID::EN);
+			auto en_name = convert(en_sig);
+			log_assert(en_sig.size() == 1);
+
+			auto bit_iter = data_bits.begin();
+			for (const auto &sz_str : arg_size) {
+
+				auto sz = std::stoi(sz_str);
+				auto arg_bits = std::vector<SigBit>(bit_iter, bit_iter + sz);
+				auto arg_sig = SigSpec(arg_bits);
+				auto arg_name = convert(arg_sig);
+				instr.PUT(arg_name, en_name);
+			}
+			instr.FLUSH(fmt, en_name);
+
+		} else if (call_type == "$stop" || call_type == "$finish") {
+
+			auto en_sig = cell->getPort(ID::EN);
+			auto en_name = convert(en_sig);
+			if (call_type == "$stop") {
+				instr.STOP(en_name);
+			} else {
+				instr.FINISH(en_name);
+			}
+		} else if (call_type == "$assert") {
+
+			auto en_name = convert(cell->getPort(ID::EN));
+			auto cond_name = convert(cell->getPort(ID::A));
+			// if (en_name) assert(cond_name) is equivalent to assert(~en_name | cond_name)
+			auto dis_name = def_wire.temp(1);
+			instr.XOR(dis_name, en_name, def_const.get(Const(State::S1, 1)));
+			auto implication = def_wire.temp(1);
+			instr.OR(implication, dis_name, cond_name);
+			instr.ASSERT(implication);
+
+		} else {
+			log_error("%s.%s : %s not implemented yet!\n", log_id(mod), log_id(cell), call_type.c_str());
 		}
 	}
 	void generate()
 	{
 
-		for (const auto &cell : mod->cells()) {
-			try {
-				convert(cell);
-			} catch (const std::exception &e) {
-				log_error("Do not know how translate cell %s of type %s\n", RTLIL::id2cstr(cell->name), RTLIL::id2cstr(cell->type));
-			}
+		for (auto cell : mod->cells()) {
+			convert(cell);
+		}
+
+		// sort the syscall instructions
+
+		auto cellOrdering = [](const Cell *cell1, const Cell *cell2) -> bool {
+			auto order1 = cell1->getParam(ID::ORDER).as_int();
+			auto order2 = cell2->getParam(ID::ORDER).as_int();
+			return order1 < order2;
+		};
+
+		std::sort(syscalls.begin(), syscalls.end(), cellOrdering);
+
+		for (auto cell : syscalls) {
+			convertSyscall(cell);
 		}
 
 		for (const auto &con : mod->connections()) {
@@ -887,19 +1006,26 @@ struct ManticoreAssemblyWorker {
 			log_error("Could not open %s\n", filename.c_str());
 		}
 
+		auto append = [&](const std::string& cmt, std::stringstream& s) {
+			ofs << "// " << cmt << std::endl;
+			if (s.tellp() > 0) {
+				ofs << s.rdbuf() << std::endl;
+			}
+		};
 		ofs << ".prog:" << std::endl;
 		ofs << ".proc main:" << std::endl;
-		ofs << "// wires " << std::endl;
-		ofs << def_wire.defs.rdbuf() << std::endl;
-		ofs << "// states " << std::endl;
-		ofs << def_wire.regs.rdbuf() << std::endl;
-		ofs << "// mems " << std::endl;
-		ofs << def_wire.mems.rdbuf() << std::endl;
-		ofs << "// constants" << std::endl;
-		ofs << def_const.defs.rdbuf() << std::endl;
-		ofs << "//instructions" << std::endl;
-		ofs << instr.builder.rdbuf() << std::endl;
 
+		append("wires", def_wire.defs);
+
+		append("states", def_wire.regs);
+
+		append("memories", def_wire.mems);
+
+		append("constants", def_const.defs);
+
+		append("instructions", instr.builder);
+
+		ofs.flush();
 		ofs.close();
 		log("Finished writing to %s\n", filename.c_str());
 	}
@@ -920,6 +1046,7 @@ struct ManticoreAssemblyWriter : public Pass {
 	void execute(std::vector<std::string> args, Design *design) override
 	{
 
+		log_header(design, "Emitting Manticore Assembly\n");
 		if (args.size() != 2) {
 			log_error("Invalid call to %s\n", pass_name.c_str());
 		}

@@ -195,9 +195,6 @@ struct ManticoreTb : public Pass {
 		tb << "end\n";
 		tb << "endtask\n";
 
-		std::vector<std::string> header1;
-		std::string header2 = "";
-
 		tb << stringf("task %s;\n", idy(mod->name.str(), "print_status").c_str());
 		tb << stringf("begin\n");
 		{

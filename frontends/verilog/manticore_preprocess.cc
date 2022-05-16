@@ -384,8 +384,7 @@ DISPATCH_DEF(AST_BLOCK, block)
 			// AstNode*
 			m_add_masm_privilaged = true; // notify the design to add the MASM_PRIVILAGED blackbox
 			delete child;
-		} else if (child->type == AST::AST_TCALL && (child->str == "$display" || child->str == "$finish" || child->str == "$stop") &&
-			   m_current_clock.size() == 1) {
+		} else if (child->type == AST::AST_TCALL && (child->str == "$display" || child->str == "$finish" || child->str == "$stop")) {
 
 
 			// create a new AstNode represeting this $display/$stop/$finish with some added information
@@ -411,7 +410,7 @@ DISPATCH_DEF(AST_BLOCK, block)
 			transformed_children.push_back(manticore_node);
 			delete child;
 
-		} else if (child->type == AST::AST_ASSERT && m_current_clock.size() == 1) {
+		} else if (child->type == AST::AST_ASSERT) {
 			AstNode *en_expr;
 			if (m_conditions.size() == 0) {
 				en_expr = AstNode::mkconst_int(1, false, 1);

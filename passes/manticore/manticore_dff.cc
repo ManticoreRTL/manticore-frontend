@@ -34,6 +34,14 @@ struct ManticoreDff : public Pass {
 					     ID($sdffce) // diff with (chip)-EN and sync reset (reset only applies if enabled)
 			);
 		}
+		bool isUnsupported(Cell *cell) const
+		{
+
+			return cell->type.in(ID($adff), ID($adffe), ID($dffsr), ID($dffsre), ID($dffs),			    // async reset
+					     ID($dlatch), ID($adlatch), ID($dlatchsr), ID($adffe), ID($aldff), ID($aldffe) // latches
+
+			);
+		}
 
 		Cell *dffCast(Cell *cell)
 		{
@@ -69,6 +77,9 @@ struct ManticoreDff : public Pass {
 			if (builder.isConvertible(cell)) {
 				convertibles.push_back(cell);
 			} else {
+				if (builder.isUnsupported(cell)) {
+					log_error("%s.%s of type %s is not supported!\n", log_id(mod), log_id(cell), log_id(cell->type));
+				}
 				auto user_cell = design->module(cell->type);
 				if (user_cell != NULL) {
 					sub_modules.insert(user_cell);
@@ -122,7 +133,6 @@ struct ManticoreDff : public Pass {
 				mod->remove(cell);
 
 			} else {
-
 				log_abort();
 			}
 		}
