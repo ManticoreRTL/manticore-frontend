@@ -24,6 +24,61 @@ static int bitLength(const unsigned int value)
 		return len;
 	}
 }
+static inline std::string convertFmt(const std::string &original, std::vector<std::string> sizes)
+{
+
+	if (original.empty()) {
+		return original;
+	}
+
+	auto parts = manticore::split(original, '%');
+	if (parts.size() == 1) {
+		return parts.front();
+	}
+	std::stringstream builder;
+	int size_ix = 0;
+	bool first = true;
+	for (const auto &p : parts) {
+		if (first) {
+			first = false;
+			if (!p.empty())
+				builder << p;
+			continue;
+		}
+
+		if (p[0] == '0') {
+			builder << "%0";
+		} else {
+			builder << '%';
+		}
+		auto spec_type_pos = p.find_first_of("hbdHBD");
+		if (spec_type_pos == std::string::npos) {
+			log_error("Invalid specifier %s\n", original.c_str());
+		}
+		log_assert(size_ix < GetSize(sizes));
+
+		auto size_str = sizes[size_ix++];
+		auto size_begin = p.find_first_of("123456789");
+		if (size_begin != std::string::npos) {
+			size_str = p.substr(size_begin, spec_type_pos);
+		}
+		builder << size_str << p[spec_type_pos];
+		if (spec_type_pos + 1 < p.size()) {
+			builder << p.substr(spec_type_pos + 1);
+		}
+	}
+
+	return builder.str();
+}
+static inline std::string sourceInfo(RTLIL::AttrObject *obj)
+{
+
+	if (obj->has_attribute(ID::SRC)) {
+		auto src = obj->get_string_attribute(ID::SRC);
+		return stringf("@Sourceinfo [ file = \"%s\" ]", src.c_str());
+	}
+	return "";
+}
 struct NameBuilder {
 	// const std::string prefix;
 	Module *mod;
@@ -31,10 +86,10 @@ struct NameBuilder {
 	inline std::string next(const std::string &prefix)
 	{
 
-		auto n = mod->uniquify(stringf("$%s$_$%d", prefix.c_str(), index), index);
+		auto n = stringf("%%%s%d", prefix.c_str(), index);
 		index++;
 		// log("New name : %s\n", n.c_str());
-		return n.str();
+		return n;
 	}
 	NameBuilder(Module *m) : mod(m), index(0) {}
 };
@@ -56,7 +111,7 @@ struct WireBuilder {
 	WireBuilder(Module *m) : namer(m) {}
 	inline std::string temp(int width)
 	{
-		auto name = namer.next("temp");
+		auto name = namer.next("w");
 		defs << "\t.wire "
 		     << " " << name << " " << width << std::endl;
 		return name;
@@ -65,13 +120,22 @@ struct WireBuilder {
 	{
 		if (!wires.count(w)) {
 
-			if (w->has_attribute(ID::hdlname)) {
-				auto dotted_name = std::regex_replace(w->get_string_attribute(ID::hdlname), std::regex(" "), ".");
+			auto name = namer.next("w");
 
+			if (w->has_attribute(ID::hdlname)) {
+				auto dotted_name = std::regex_replace(w->get_string_attribute(ID::hdlname), std::regex(" "), "/");
 				defs << "\t@DEBUGSYMBOL [ symbol = \"" << dotted_name << "\" ]" << std::endl;
+			} else if (w->name.c_str()[0] == '\\') {
+				// this is user signal so create a debug symbol
+				defs << "\t@DEBUGSYMBOL [ symbol = \"" << w->name.str().substr(1) << "\" ]" << std::endl;
 			}
-			defs << "\t.wire " << w->name.str() << " " << w->width << std::endl;
-			wires.emplace(w, w->name.str());
+			auto srcinfo = sourceInfo(w);
+			if (!srcinfo.empty()) {
+				defs << "\t" << srcinfo << std::endl;
+			}
+			defs << "// " << w->name.str() << std::endl;
+			defs << "\t.wire " << name << " " << w->width << std::endl;
+			wires.emplace(w, name);
 		}
 		return wires[w];
 	}
@@ -82,8 +146,8 @@ struct WireBuilder {
 		log_assert(dff->type == ID($dff));
 		if (!states.count(dff)) {
 			int width = dff->getParam(ID::WIDTH).as_int();
-			auto q_name = namer.next("current");
-			auto d_name = namer.next("next");
+			auto q_name = namer.next("i");
+			auto d_name = namer.next("o");
 
 			regs << "\t.reg " << dff->name.str() << " " << width << " .input " << q_name << " ";
 			if (dff->has_attribute(ID::INIT)) {
@@ -178,7 +242,8 @@ struct InstructionBuilder {
 
 	// enum AluOp
 	std::stringstream builder;
-	InstructionBuilder() {}
+	int interrupt_order = 0;
+	InstructionBuilder() : interrupt_order(0) {}
 
 	inline void LOAD(const std::string &rd, const std::string &base) { builder << "\tLLD " << rd << ", " << base << "[0];" << std::endl; }
 	inline void STORE(const std::string &rs, const std::string &base, const std::string &pred)
@@ -192,7 +257,7 @@ struct InstructionBuilder {
 	inline void MOV(const std::string &rd, const std::string &rs) { builder << "\tMOV " << rd << ", " << rs << ";" << std::endl; }
 	inline void SLICE(const std::string &rd, const std::string &rs, int offset, int len)
 	{
-		builder << "\tSLICE " << rd << ", " << rs << "[" << offset << " +: " << len << "];" << std::endl;
+		builder << "\tSLICE " << rd << ", " << rs << ", " << offset << ", " << len << ";" << std::endl;
 	}
 
 	// inline void CONCAT(const std::string &rd, const std::string &rs_low, const std::string &rs_high, int offset)
@@ -214,15 +279,21 @@ struct InstructionBuilder {
 		builder << "\tMUX " << rd << ", " << sel << ", " << rfalse << ", " << rtrue << ";" << std::endl;
 	}
 
-	inline void PUT(const std::string &rs, const std::string &pred) { builder << "\tPUT " << rs << ", " << pred << ";" << std::endl; }
+	inline void PUT(const std::string &rs, const std::string &pred)
+	{
+		builder << "\t(0, " << interrupt_order++ << ") PUT " << rs << ", " << pred << ";" << std::endl;
+	}
 
-	inline void FLUSH(const std::string &fmt, const std::string &pred) { builder << "\tFLUSH \"" << fmt << "\", " << pred << ";" << std::endl; }
+	inline void FLUSH(const std::string &fmt, const std::string &pred)
+	{
+		builder << "\t(0, " << interrupt_order++ << ") FLUSH \"" << fmt << "\", " << pred << ";" << std::endl;
+	}
 
-	inline void FINISH(const std::string &pred) { builder << "\tFINISH " << pred << ";" << std::endl; }
+	inline void FINISH(const std::string &pred) { builder << "\t(0, " << interrupt_order++ << ") FINISH " << pred << ";" << std::endl; }
 
-	inline void ASSERT(const std::string &pred) { builder << "\tASSERT " << pred << ";" << std::endl; }
+	inline void ASSERT(const std::string &pred) { builder << "\t(0, " << interrupt_order++ << ") ASSERT " << pred << ";" << std::endl; }
 
-	inline void STOP(const std::string &pred) { builder << "\tSTOP " << pred << ";" << std::endl; }
+	inline void STOP(const std::string &pred) { builder << "\t(0, " << interrupt_order++ << ") STOP " << pred << ";" << std::endl; }
 
 #define BINOP_DEF(op)                                                                                                                                \
 	inline void op(const std::string &rd, const std::string &rs1, const std::string &rs2)                                                        \
@@ -242,7 +313,11 @@ struct InstructionBuilder {
 	BINOP_DEF(SLTS) // Last ALU op
 
 #undef BINOP_DEF
-
+	inline void emit(const std::string &str)
+	{
+		if (str.empty() == false)
+			builder << "\t" << str << std::endl;
+	}
 	inline void comment(const std::string &msg) { builder << "// " << msg << std::endl; }
 	inline void comment(Cell *cell) { builder << "// " << RTLIL::id2cstr(cell->name) << " : " << RTLIL::id2cstr(cell->type) << std::endl; }
 };
@@ -742,6 +817,7 @@ struct ManticoreAssemblyWorker {
 
 			auto a_width = cell->getParam(ID::A_WIDTH).as_int();
 			auto b_width = cell->getParam(ID::B_WIDTH).as_int();
+
 			if (y_width == 1) {
 				mkSlts(cell, y_name, b_width, a_width, b_signed, a_signed, b_sig, a_sig);
 			} else {
@@ -764,8 +840,11 @@ struct ManticoreAssemblyWorker {
 
 			auto equal = def_wire.temp(1);
 			auto less = def_wire.temp(1);
+
 			mkSeq(cell, equal);
+
 			mkSlts(cell, less, a_width, b_width, a_signed, b_signed, a_sig, b_sig);
+
 			if (y_width == 1) {
 				instr.OR(y_name, less, equal);
 			} else {
@@ -801,8 +880,6 @@ struct ManticoreAssemblyWorker {
 
 			checker.assertBothUnsigned();
 
-			auto max_width = maxWidth();
-
 			auto a_zero = def_wire.temp(1);
 			auto b_zero = def_wire.temp(1);
 			auto a_nonzero = def_wire.temp(1);
@@ -819,8 +896,7 @@ struct ManticoreAssemblyWorker {
 
 			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
 			auto y_name = convert(cell->getPort(ID::Y));
-
-
+			instr.emit(sourceInfo(cell));
 			if (cell->type == ID($logic_and)) {
 				if (y_width == 1) {
 					instr.AND(y_name, a_nonzero, b_nonzero);
@@ -834,11 +910,11 @@ struct ManticoreAssemblyWorker {
 					instr.OR(y_name, a_nonzero, b_nonzero);
 				} else {
 					auto res = def_wire.temp(1);
+
 					instr.OR(res, a_nonzero, b_nonzero);
 					instr.PADZERO(y_name, res, y_width);
 				}
 			}
-
 
 		} else if (cell->type == ID($mux)) {
 
@@ -846,6 +922,7 @@ struct ManticoreAssemblyWorker {
 			auto b_name = convert(cell->getPort(ID::B));
 			auto y_name = convert(cell->getPort(ID::Y));
 			auto s_name = convert(cell->getPort(ID::S));
+			instr.emit(sourceInfo(cell));
 			instr.MUX(y_name, s_name, a_name, b_name);
 
 		} else if (cell->type == ID($pmux)) {
@@ -864,6 +941,7 @@ struct ManticoreAssemblyWorker {
 				cases.push_back(convert(SigSpec(case_bits)));
 				conditions.push_back(convert(SigSpec(cond_bits[case_ix])));
 			}
+			instr.emit(sourceInfo(cell));
 			instr.PARMUX(convert(cell->getPort(ID::Y)), cases, a_name, conditions);
 		} else if (cell->type == ID($memrd_v2)) {
 
@@ -885,8 +963,8 @@ struct ManticoreAssemblyWorker {
 			auto addr_name = convert(cell->getPort(ID::ADDR));
 
 			auto load_addr = def_wire.temp(addr_width);
-
 			instr.ADD(load_addr, def_wire.getMemory(mem), addr_name);
+			instr.emit(sourceInfo(cell));
 			instr.LOAD(data_name, load_addr);
 
 		} else if (cell->type == ID($memwr_v2)) {
@@ -902,6 +980,7 @@ struct ManticoreAssemblyWorker {
 			instr.ADD(store_addr, def_wire.getMemory(mem), convert(cell->getPort(ID::ADDR)));
 			auto en_bit = cell->getPort(ID::EN)[0];
 			auto pred_name = convert(SigSpec(en_bit));
+			instr.emit(sourceInfo(cell));
 			instr.STORE(convert(cell->getPort(ID::DATA)), store_addr, pred_name);
 
 		} else if (cell->type == ID($dff)) {
@@ -930,6 +1009,7 @@ struct ManticoreAssemblyWorker {
 			auto fmt = cell->getParam(ID::FMT).decode_string();
 			auto sizes_str = cell->getParam(ID::VAR_ARG_SIZE).decode_string();
 			auto arg_size = manticore::split(sizes_str, ',');
+
 			auto data_bits = cell->getPort(ID::B).to_sigbit_vector();
 			auto en_sig = cell->getPort(ID::EN);
 			auto en_name = convert(en_sig);
@@ -942,14 +1022,21 @@ struct ManticoreAssemblyWorker {
 				auto arg_bits = std::vector<SigBit>(bit_iter, bit_iter + sz);
 				auto arg_sig = SigSpec(arg_bits);
 				auto arg_name = convert(arg_sig);
+
+				instr.emit(sourceInfo(cell));
 				instr.PUT(arg_name, en_name);
+				bit_iter += sz;
 			}
-			instr.FLUSH(fmt, en_name);
+			auto srcinfo = sourceInfo(cell);
+			instr.emit(sourceInfo(cell));
+			instr.FLUSH(convertFmt(fmt, arg_size), en_name);
 
 		} else if (call_type == "$stop" || call_type == "$finish") {
 
 			auto en_sig = cell->getPort(ID::EN);
 			auto en_name = convert(en_sig);
+			auto srcinfo = sourceInfo(cell);
+			instr.emit(sourceInfo(cell));
 			if (call_type == "$stop") {
 				instr.STOP(en_name);
 			} else {
@@ -964,6 +1051,9 @@ struct ManticoreAssemblyWorker {
 			instr.XOR(dis_name, en_name, def_const.get(Const(State::S1, 1)));
 			auto implication = def_wire.temp(1);
 			instr.OR(implication, dis_name, cond_name);
+			auto srcinfo = sourceInfo(cell);
+			if (srcinfo.empty() == false)
+				instr.emit(srcinfo);
 			instr.ASSERT(implication);
 
 		} else {
@@ -1006,7 +1096,7 @@ struct ManticoreAssemblyWorker {
 			log_error("Could not open %s\n", filename.c_str());
 		}
 
-		auto append = [&](const std::string& cmt, std::stringstream& s) {
+		auto append = [&](const std::string &cmt, std::stringstream &s) {
 			ofs << "// " << cmt << std::endl;
 			if (s.tellp() > 0) {
 				ofs << s.rdbuf() << std::endl;

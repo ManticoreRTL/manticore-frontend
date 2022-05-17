@@ -22,12 +22,18 @@ struct ManticoreSubword : public Pass {
 		}
 	}
 
+	// struct Subword {
+	// 	Wire* wire;
+	// 	int offset;
+	// 	int width;
+	// 	Subword(Wire* wire, int offset, int width) : wire(wire), offset(offset), width(width) {}
+	// };
 	void transform(Module *mod)
 	{
 		int name_index = 0;
 		auto freshName = [&](const std::string &prefix) { return mod->uniquify(stringf("$%s$", prefix.c_str()), name_index); };
 
-		dict<Wire *, std::vector<std::pair<SigChunk, Wire *>>> subwords;
+		dict<Wire *, std::vector<std::pair<SigChunk, SigChunk>>> subwords;
 		for (auto cell : mod->cells()) {
 			for (auto &con : cell->connections()) {
 				auto port_name = con.first;
@@ -40,12 +46,16 @@ struct ManticoreSubword : public Pass {
 					log("Replacing %s.%s.%s => %s with %s\n", log_id(mod), log_id(cell), log_id(port_name), log_signal(sig),
 					    log_signal(alias_wire));
 
-					if (sig.is_chunk() == false) {
-						log_error("%s.%s.%s => %s assigns to two different wires\n", log_id(mod), log_id(cell),
-							  log_id(port_name), log_signal(sig));
-					} else {
-						auto chunk = sig.as_chunk();
-						subwords[chunk.wire].emplace_back(chunk, alias_wire);
+					auto chunks = sig.chunks();
+					int offset = 0;
+					for (const auto &chunk : chunks) {
+
+						if (chunk.is_wire()) {
+							subwords[chunk.wire].emplace_back(chunk, SigChunk(alias_wire, offset, chunk.width));
+						} else {
+							log_error("%s.%s.%s => %s assigns to contant\n", log_id(mod), log_id(cell), log_id(port_name), log_signal(sig));
+						}
+						offset += chunk.width;
 					}
 				}
 			}
@@ -62,13 +72,18 @@ struct ManticoreSubword : public Pass {
 				// connection assign to a subword
 				auto alias_wire = mod->addWire(freshName("subword_lhs"), lhs.size());
 				log("Replacing %s with %s\n", log_signal(lhs), log_signal(alias_wire));
-				if (!lhs.is_chunk()) {
-					log_error("In %s connection %s <= %s assigns to two different wires\n", log_id(mod), log_signal(lhs),
-						  log_signal(con.second));
-				} else {
-					auto chunk = lhs.as_chunk();
-					subwords[chunk.wire].emplace_back(chunk, alias_wire);
+
+				auto chunks = lhs.chunks();
+				int offset = 0;
+				for (const auto &chunk : chunks) {
+					if (chunk.is_wire()) {
+						subwords[chunk.wire].emplace_back(chunk, SigChunk(alias_wire, offset, chunk.width));
+					} else {
+						log_error("In %s connect %s %s assigns to contant\n", log_id(mod), log_signal(lhs), log_signal(con.second));
+					}
+					offset += chunk.width;
 				}
+				new_connections.emplace_back(SigSpec(alias_wire), con.second);
 			}
 		}
 
