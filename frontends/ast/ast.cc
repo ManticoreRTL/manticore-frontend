@@ -56,6 +56,7 @@ namespace AST_INTERNAL {
 	bool current_always_clocked;
 	dict<std::string, int> current_memwr_count;
 	dict<std::string, pool<int>> current_memwr_visible;
+	int manticore_order = 0;
 }
 
 // convert node types to string

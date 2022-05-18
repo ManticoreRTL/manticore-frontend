@@ -2834,11 +2834,12 @@ skip_dynamic_range_lvalue_expansion:;
 
 			// create a block for non-blocking assignments of the arguments
 			// given to the display node
-			AstNode* assignment_block = new AstNode(
-				AST_BLOCK
-			);
+			AstNode* assignment_block = new AstNode(AST_BLOCK);
+			AstNode* default_assignment_block = new AstNode(AST_BLOCK);
+
 			AstNode* en_reg = createRegister(freshName("EN"), 1, false);
-			AstNode* en_assign = createNonBlockingAssignment(en_reg->str, children[0]->clone());
+			AstNode* en_assign = createNonBlockingAssignment(en_reg->str, mkconst_int(1, false, 1));
+			AstNode* default_en_assign = createNonBlockingAssignment(en_reg->str, mkconst_int(0, false, 1));
 			AstNode* en_init = new AstNode(AST_INITIAL,
 				new AstNode(AST_BLOCK,
 					new AstNode(AST_ASSIGN_EQ, en_assign->children[0]->clone(), mkconst_int(0, false, 1))));
@@ -2846,16 +2847,28 @@ skip_dynamic_range_lvalue_expansion:;
 			assignment_block->children.push_back(en_assign);
 			assignment_block->filename = filename;
 			assignment_block->location = location;
+
+			default_assignment_block->children.push_back(default_en_assign);
+			default_assignment_block->filename = filename;
+			default_assignment_block->location = location;
+
 			AstNode* manticore_task = new AstNode(
 					AST_MANTICORE,
 					en_assign->children[0]->clone(), // enable signal
-					children[1]->clone() // ordering integer
+					// children[1]->clone() // ordering integer
+					mkconst_int(manticore_order ++, false, 32)
 			);
 
+			auto defaultStateX = [](const int width, const bool sign) -> AstNode* {
+				std::vector<State> bits(width);
+				std::fill(bits.begin(), bits.end(), State::Sx);
+				return mkconst_bits(bits, sign);
+			};
 			if (str == "$display") {
 				log_assert(children.size() >= 3);
 				std::vector<AstNode*> var_args (children.cbegin() + 3, children.cend());
 				manticore_task->children.push_back(children[2]->clone()); // fmt string
+
 				for(const auto& va : var_args) {
 					// get the width of the reg
 					int reg_width = -1;
@@ -2863,7 +2876,11 @@ skip_dynamic_range_lvalue_expansion:;
 					va->detectSignWidth(reg_width, reg_sign);
 					auto va_reg = createRegister(freshName("VARG"), reg_width, reg_sign);
 					auto va_assign = createNonBlockingAssignment(va_reg->str, va->clone());
+
+					auto va_default_assign = createNonBlockingAssignment(va_reg->str,
+						defaultStateX(reg_width, reg_sign));
 					assignment_block->children.push_back(va_assign);
+					default_assignment_block->children.push_back(va_default_assign);
 					// set the argument in the
 					manticore_task->children.push_back(va_assign->children[0]->clone());
 				}
@@ -2874,8 +2891,12 @@ skip_dynamic_range_lvalue_expansion:;
 				auto check_reg = createRegister(freshName("CHECK"), 1, false);
 				auto check_assign = createNonBlockingAssignment(check_reg->str, children.back()->clone());
 				assignment_block->children.push_back(check_assign);
+				auto default_check_assign = createNonBlockingAssignment(check_reg->str, defaultStateX(1, false));
+				default_assignment_block->children.push_back(default_check_assign);
 				manticore_task->children.push_back(check_assign->children[0]->clone());
 			}
+
+			current_top_block->children.insert(current_top_block->children.begin(), default_assignment_block);
 
 			manticore_task->location = location;
 			manticore_task->filename = filename;
@@ -2889,7 +2910,7 @@ skip_dynamic_range_lvalue_expansion:;
 
 			goto apply_newNode;
 		} else {
-			log_error("Can not have system call outside clocked always blocks!");
+			log_error("Can not have system %s call outside clocked always blocks!\n", str.c_str());
 		}
 	}
 

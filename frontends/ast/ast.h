@@ -410,6 +410,8 @@ namespace AST_INTERNAL
 	struct LookaheadRewriter;
 	struct ProcessGenerator;
 
+	// for manticore
+	extern int manticore_order;
 	// Create and add a new AstModule from new_ast, then use it to replace
 	// old_module in design, renaming old_module to move it out of the way.
 	// Return the new module.

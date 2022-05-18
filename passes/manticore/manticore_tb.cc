@@ -255,10 +255,10 @@ struct ManticoreTb : public Pass {
 
 		tb << stringf("always @(posedge clk) begin\n");
 		tb << stringf("\tif(rst_counter < 10) begin\n");
-		tb << stringf("\t\trst_counter = rst_counter + 1;\n");
-		tb << stringf("\t\titer = 0;\n");
+		tb << stringf("\t\trst_counter <= rst_counter + 1;\n");
+		tb << stringf("\t\titer <= 0;\n");
 		for (auto inp : signal_in) {
-			tb << stringf("\t\t%s = 0;\n", inp.first.c_str());
+			tb << stringf("\t\t%s <= 0;\n", inp.first.c_str());
 		}
 		tb << stringf("\tend else if (iter < %d) begin\n", num_iter);
 		tb << stringf("\t\tif(iter[5:0] == 0)\n");

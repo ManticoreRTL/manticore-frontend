@@ -427,6 +427,7 @@ DISPATCH_DEF(AST_BLOCK, block)
 			manticore_assert->attributes.swap(child->attributes);
 			transformed_children.push_back(manticore_assert);
 			delete child;
+			// transformed_children.push_back(child);
 		} else {
 			transformNode(child);
 			transformed_children.push_back(child);

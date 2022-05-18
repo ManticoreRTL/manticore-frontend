@@ -73,8 +73,8 @@ static inline std::string convertFmt(const std::string &original, std::vector<st
 static inline std::string sourceInfo(RTLIL::AttrObject *obj)
 {
 
-	if (obj->has_attribute(ID::SRC)) {
-		auto src = obj->get_string_attribute(ID::SRC);
+	if (obj->has_attribute(ID::src)) {
+		auto src = obj->get_src_attribute();
 		return stringf("@Sourceinfo [ file = \"%s\" ]", src.c_str());
 	}
 	return "";
@@ -1052,8 +1052,7 @@ struct ManticoreAssemblyWorker {
 			auto implication = def_wire.temp(1);
 			instr.OR(implication, dis_name, cond_name);
 			auto srcinfo = sourceInfo(cell);
-			if (srcinfo.empty() == false)
-				instr.emit(srcinfo);
+			instr.emit(srcinfo);
 			instr.ASSERT(implication);
 
 		} else {

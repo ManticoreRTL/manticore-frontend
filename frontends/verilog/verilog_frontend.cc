@@ -274,6 +274,9 @@ struct VerilogFrontend : public Frontend {
 		specify_mode = false;
 		default_nettype_wire = true;
 
+		// manticore
+		bool manticore_assembly = false;
+
 		args.insert(args.begin()+1, verilog_defaults.begin(), verilog_defaults.end());
 
 		size_t argidx;
@@ -422,10 +425,17 @@ struct VerilogFrontend : public Frontend {
 				default_nettype_wire = false;
 				continue;
 			}
+
+			if (arg == "-masm") {
+				manticore_assembly = true;
+				continue;
+			}
+
 			if (arg == "-setattr" && argidx+1 < args.size()) {
 				attributes.push_back(RTLIL::escape_id(args[++argidx]));
 				continue;
 			}
+
 			if (arg == "-D" && argidx+1 < args.size()) {
 				std::string name = args[++argidx], value;
 				size_t equal = name.find('=');
@@ -517,16 +527,21 @@ struct VerilogFrontend : public Frontend {
 		masm_frontend::ManticorePreprocess manticore_prep(current_ast);
 
 
-		auto hoisted = manticore_prep.transformed();
-		masm_frontend::TransformSanitizer checker(current_ast, hoisted);
-		checker.check();
+		AST::AstNode* manticore_ready = nullptr;
+		if (manticore_assembly) {
+			manticore_ready = manticore_prep.transformed();
+			masm_frontend::TransformSanitizer checker(current_ast, manticore_ready);
+			checker.check();
+		} else {
 
-		// masm_frontend::MasmInsertDebugAttributes debug_inserter(hoisted);
+		}
+
+		// masm_frontend::MasmInsertDebugAttributes debug_inserter(manticore_ready);
 		// auto with_debug_sym = debug_inserter.transformed();
 
 
 
-		AST::process(design, hoisted, flag_dump_ast1, flag_dump_ast2, flag_no_dump_ptr, flag_dump_vlog1, flag_dump_vlog2, flag_dump_rtlil, flag_nolatches,
+		AST::process(design, (manticore_ready != nullptr ? manticore_ready : current_ast), flag_dump_ast1, flag_dump_ast2, flag_no_dump_ptr, flag_dump_vlog1, flag_dump_vlog2, flag_dump_rtlil, flag_nolatches,
 				flag_nomeminit, flag_nomem2reg, flag_mem2reg, flag_noblackbox, lib_mode, flag_nowb, flag_noopt, flag_icells, flag_pwires, flag_nooverwrite, flag_overwrite, flag_defer, default_nettype_wire);
 
 
@@ -536,8 +551,8 @@ struct VerilogFrontend : public Frontend {
 		// only the previous and new global type maps remain
 		log_assert(user_type_stack.size() == 2);
 		user_type_stack.clear();
-
-		delete hoisted;
+		if (manticore_ready)
+			delete manticore_ready;
 		// delete with_debug_sym;
 		delete current_ast;
 		current_ast = NULL;
