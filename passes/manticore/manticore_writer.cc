@@ -583,7 +583,7 @@ struct ManticoreAssemblyWorker {
 			instr.SLTS(res, convert(cell->getPort(op1_port)), convert(cell->getPort(op2_port)));
 		} else {
 			auto w = std::max(cell->getParam(ID::A_WIDTH).as_int(),
-									 cell->getPort(ID::B_WIDTH).as_int());
+									 cell->getParam(ID::B_WIDTH).as_int());
 			instr.SLT(res, padConvert(cell->getPort(op1_port), w), padConvert(cell->getPort(op2_port), w));
 		}
 	}
