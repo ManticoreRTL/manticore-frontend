@@ -571,19 +571,20 @@ struct ManticoreAssemblyWorker {
 		checker.assertSignedOperandsRequireEqualWidth();
 		checker.assertEqualSigns();
 
-		auto a_name = convert(cell->getPort(ID::A));
-		auto b_name = convert(cell->getPort(ID::B));
+
 		auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
 		auto b_signed = cell->getParam(ID::B_SIGNED).as_bool();
 
-		auto op1_name = less ? a_name : b_name;
-		auto op2_name = less ? b_name : a_name;
+		auto op1_port = less ? ID::A : ID::B;
+		auto op2_port = less ? ID::B : ID::A;
 
 		if (a_signed) {
 			checker.assertEqualWidth();
-			instr.SLTS(res, op1_name, op2_name);
+			instr.SLTS(res, convert(cell->getPort(op1_port)), convert(cell->getPort(op2_port)));
 		} else {
-			instr.SLT(res, op1_name, op2_name);
+			auto w = std::max(cell->getParam(ID::A_WIDTH).as_int(),
+									 cell->getPort(ID::B_WIDTH).as_int());
+			instr.SLT(res, padConvert(cell->getPort(op1_port), w), padConvert(cell->getPort(op2_port), w));
 		}
 	}
 
