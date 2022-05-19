@@ -310,6 +310,7 @@ struct InstructionBuilder {
 	BINOP_DEF(SRL)
 	BINOP_DEF(SRA)
 	BINOP_DEF(SEQ)
+	BINOP_DEF(SLT)
 	BINOP_DEF(SLTS) // Last ALU op
 
 #undef BINOP_DEF
@@ -563,48 +564,26 @@ struct ManticoreAssemblyWorker {
 		}
 	}
 
-	inline void mkSlts(Cell *cell, const std::string &res, int a_width, int b_width, bool a_signed, bool b_signed, const SigSpec &a,
-			   const SigSpec &b)
+	inline void mkCompare(Cell *cell, const std::string &res, bool less = true)
 	{
 
-		// We implement less than as a subtraction and a test because we can
-		// later use the same logic when lowering MASM to 16-bit operands.
-		// Lowering SUB is trivial, and the SLTS does not change (it is already
-		// single-bit < 16).
-		// We use SLTS instead of SLTU because we have to check if the result is
-		// negative.
-		// IMPORTANT: We need to sign zero extend the operands if they are not signed.
-		// 1. Suppose 32 bit unsigned numbers with a = (1 << 31) + 1 and b = 1, obviously,
-		// a - b = 1 << 31 is a negative number from the perspective of SLTS but
-		// here infact we would like to have a < b to be false, but if we simply
-		// subtract and then check for a negative result, we will have the wrong
-		// conclusion. Therefore, if we look at the operands as 32-bit signed numbers
-		// with the sign bit hardcoded to zero, we can use SLTS and conclude
-		// a < b to false.
-		// 2. Suppose 32 bit signed numbers. Here because the sign is already encoded
-		// in the operands, we need not to zero/sign extend them.
+		auto checker = CellSanityChecker(cell);
+		checker.assertSignedOperandsRequireEqualWidth();
+		checker.assertEqualSigns();
 
-		auto mkZero = [this](int width) { return def_const.get(Const(State::S0, width)); };
-		if (a_signed != b_signed) {
-			log_error("Expected equal signs in cell %s of type %s\n", log_id(cell->name), log_id(cell->type));
-		}
+		auto a_name = convert(cell->getPort(ID::A));
+		auto b_name = convert(cell->getPort(ID::B));
+		auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
+		auto b_signed = cell->getParam(ID::B_SIGNED).as_bool();
+
+		auto op1_name = less ? a_name : b_name;
+		auto op2_name = less ? b_name : a_name;
+
 		if (a_signed) {
-			if (a_width != b_width) {
-				log_error("Expected equal width in cell %s of type %s\n", log_id(cell->name), log_id(cell->type));
-			}
-
-			// easier case, we do not need to sign extend the operands
-			int width = a_width;
-			auto temp_name = def_wire.temp(width);
-			instr.SUB(temp_name, convert(a), convert(b));
-			instr.SLTS(res, temp_name, mkZero(width));
+			checker.assertEqualWidth();
+			instr.SLTS(res, op1_name, op2_name);
 		} else {
-			// operands are unsigned, therefore we need to zero extends them to
-			// ensure the sign bit is always zero
-			int extended_width = std::max(a_width, b_width) + 1;
-			auto temp_name = def_wire.temp(extended_width);
-			instr.SUB(temp_name, padConvert(a, extended_width), padConvert(b, extended_width));
-			instr.SLTS(res, temp_name, mkZero(extended_width));
+			instr.SLT(res, op1_name, op2_name);
 		}
 	}
 
@@ -710,7 +689,7 @@ struct ManticoreAssemblyWorker {
 
 			auto prevres = def_wire.temp(1);
 			auto const_true = def_const.get(Const(State::S1, 1));
-			if (a_width == 1) {
+			if ((a_width & 0x00000001) == 1) { // if a has odd width
 				auto prevbit = def_wire.temp(1);
 				instr.SLICE(prevbit, a_name, 0, 1);
 				instr.XOR(prevres, prevbit, const_true);
@@ -791,96 +770,38 @@ struct ManticoreAssemblyWorker {
 				instr.XOR(ne_res, seq_res, const_true);
 				instr.PADZERO(y_name, ne_res, y_width);
 			}
-		} else if (cell->type == ID($lt)) {
+		} else if (cell->type.in(ID($lt), ID($gt))) {
 
 			auto y_name = convert(cell->getPort(ID::Y));
 			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
-			auto a_sig = cell->getPort(ID::A);
-			auto b_sig = cell->getPort(ID::B);
-			auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
-			auto b_signed = cell->getParam(ID::B_SIGNED).as_bool();
-
-			auto a_width = cell->getParam(ID::A_WIDTH).as_int();
-			auto b_width = cell->getParam(ID::B_WIDTH).as_int();
-
 			if (y_width == 1) {
-				mkSlts(cell, y_name, a_width, b_width, a_signed, b_signed, a_sig, b_sig);
+				mkCompare(cell, y_name, cell->type == ID($lt));
 			} else {
 				auto tmp = def_wire.temp(1);
-				mkSlts(cell, tmp, a_width, b_width, a_signed, b_signed, a_sig, b_sig);
+				mkCompare(cell, tmp, cell->type == ID($lt));
 				instr.PADZERO(y_name, tmp, y_width);
 			}
 
-		} else if (cell->type == ID($gt)) {
-			auto y_name = convert(cell->getPort(ID::Y));
-			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
-			auto a_sig = cell->getPort(ID::A);
-			auto b_sig = cell->getPort(ID::B);
-			auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
-			auto b_signed = cell->getParam(ID::B_SIGNED).as_bool();
-
-			auto a_width = cell->getParam(ID::A_WIDTH).as_int();
-			auto b_width = cell->getParam(ID::B_WIDTH).as_int();
-
-			if (y_width == 1) {
-				mkSlts(cell, y_name, b_width, a_width, b_signed, a_signed, b_sig, a_sig);
-			} else {
-				auto tmp = def_wire.temp(1);
-				mkSlts(cell, tmp, b_width, a_width, b_signed, a_signed, b_sig, a_sig);
-				instr.PADZERO(y_name, tmp, y_width);
-			}
-
-		} else if (cell->type == ID($le)) {
+		} else if (cell->type.in(ID($le), ID($ge))) {
 
 			auto y_name = convert(cell->getPort(ID::Y));
 			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
-			auto a_sig = cell->getPort(ID::A);
-			auto b_sig = cell->getPort(ID::B);
-			auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
-			auto b_signed = cell->getParam(ID::B_SIGNED).as_bool();
-
-			auto a_width = cell->getParam(ID::A_WIDTH).as_int();
-			auto b_width = cell->getParam(ID::B_WIDTH).as_int();
 
 			auto equal = def_wire.temp(1);
-			auto less = def_wire.temp(1);
+			auto comp = def_wire.temp(1);
 
 			mkSeq(cell, equal);
-
-			mkSlts(cell, less, a_width, b_width, a_signed, b_signed, a_sig, b_sig);
+			mkCompare(cell, comp, cell->type == ID($le));
 
 			if (y_width == 1) {
-				instr.OR(y_name, less, equal);
+				instr.OR(y_name, comp, equal);
 			} else {
 				auto tmp = def_wire.temp(1);
-				instr.OR(tmp, less, equal);
+				instr.OR(tmp, comp, equal);
 				instr.PADZERO(y_name, tmp, y_width);
 			}
 
-		} else if (cell->type == ID($ge)) {
-			// like $gt ored with $eq
-			auto y_name = convert(cell->getPort(ID::Y));
-			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
-			auto a_sig = cell->getPort(ID::A);
-			auto b_sig = cell->getPort(ID::B);
-			auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
-			auto b_signed = cell->getParam(ID::B_SIGNED).as_bool();
-
-			auto a_width = cell->getParam(ID::A_WIDTH).as_int();
-			auto b_width = cell->getParam(ID::B_WIDTH).as_int();
-
-			auto equal = def_wire.temp(1);
-			auto less = def_wire.temp(1);
-			mkSeq(cell, equal);
-			mkSlts(cell, less, b_width, a_width, b_signed, a_signed, b_sig, a_sig);
-			if (y_width == 1) {
-				instr.OR(y_name, less, equal);
-			} else {
-				auto tmp = def_wire.temp(1);
-				instr.OR(tmp, less, equal);
-				instr.PADZERO(y_name, tmp, y_width);
-			}
-		} else if (cell->type == ID($logic_and) || cell->type == ID($logic_or)) {
+		}  else if (cell->type == ID($logic_and) || cell->type == ID($logic_or)) {
 
 			checker.assertBothUnsigned();
 
