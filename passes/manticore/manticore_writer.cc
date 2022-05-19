@@ -708,13 +708,17 @@ struct ManticoreAssemblyWorker {
 			UNARY_OP_HEADER
 			log_assert(!a_signed);
 
-			auto prevbit = def_wire.temp(1);
 			auto prevres = def_wire.temp(1);
 			auto const_true = def_const.get(Const(State::S1, 1));
-			instr.SLICE(prevbit, a_name, 0, 1);
-			instr.XOR(prevres, prevbit, const_true);
+			if (a_width == 1) {
+				auto prevbit = def_wire.temp(1);
+				instr.SLICE(prevbit, a_name, 0, 1);
+				instr.XOR(prevres, prevbit, const_true);
+			} else {
+				instr.SLICE(prevres, a_name, 0, 1);
+			}
 
-			for (int i = 0; i < a_width; i++) {
+			for (int i = 1; i < a_width; i++) {
 				auto thisbit = def_wire.temp(1);
 				instr.SLICE(thisbit, a_name, i, 1);
 				auto temp = def_wire.temp(1);
