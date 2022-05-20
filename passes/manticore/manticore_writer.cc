@@ -733,16 +733,25 @@ struct ManticoreAssemblyWorker {
 			checker.assertEqualSigns();
 			auto w = maxWidth();
 			instr.XOR(convert(cell->getPort(ID::Y)), padConvert(cell->getPort(ID::A), w), padConvert(cell->getPort(ID::B), w));
+		} else if (cell->type == ID($xnor)) {
+			checker.assertSignedOperandsRequireEqualWidth();
+			checker.assertEqualSigns();
+			auto w = maxWidth();
+			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
+			log_assert(w = y_width);
+			auto temp = def_wire.temp(y_width);
+			instr.XOR(temp, padConvert(cell->getPort(ID::A), w), padConvert(cell->getPort(ID::B), w));
+			instr.XOR(convert(cell->getPort(ID::Y)), temp, def_const.get(Const(State::S1, y_width)));
 		} else if (cell->type == ID($add)) {
 			checker.assertSignedOperandsRequireEqualWidth();
 			// checker.assertEqualWidth(); need not to hold if one operand is a constant
 			checker.assertEqualSigns();
 			instr.ADD(convert(cell->getPort(ID::Y)), convert(cell->getPort(ID::A)), convert(cell->getPort(ID::B)));
 		} else if (cell->type == ID($sub)) {
-			checker.assertEqualWidth();
+			checker.assertSignedOperandsRequireEqualWidth();
 			checker.assertEqualSigns();
-
-			instr.SUB(convert(cell->getPort(ID::Y)), convert(cell->getPort(ID::A)), convert(cell->getPort(ID::B)));
+			auto w = maxWidth();
+			instr.SUB(convert(cell->getPort(ID::Y)), padConvert(cell->getPort(ID::A), w), padConvert(cell->getPort(ID::B), w));
 		} else if (cell->type == ID($eq)) {
 
 			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
