@@ -28,16 +28,18 @@ struct ManticoreDff : public Pass {
 		}
 		bool isConvertible(Cell *cell) const
 		{
-			return cell->type.in(ID($dffe),	 // dff with EN
-					     ID($sdff),	 // dff with sync reset
-					     ID($sdffe), // dff with sync reset over EN
-					     ID($sdffce) // diff with (chip)-EN and sync reset (reset only applies if enabled)
+			return cell->type.in(ID($dffe),	  // dff with EN
+					     ID($sdff),	  // dff with sync reset
+					     ID($sdffe),  // dff with sync reset over EN
+					     ID($sdffce), // diff with (chip)-EN and sync reset (reset only applies if enabled)
+					     ID($adff),	  // dff with async reset
+					     ID($adffe)  // dff with async reset and enable
 			);
 		}
 		bool isUnsupported(Cell *cell) const
 		{
 
-			return cell->type.in(ID($adff), ID($adffe), ID($dffsr), ID($dffsre), ID($dffs),			    // async reset
+			return cell->type.in(ID($dffsr), ID($dffsre),							   // set-reset
 					     ID($dlatch), ID($adlatch), ID($dlatchsr), ID($adffe), ID($aldff), ID($aldffe) // latches
 
 			);
@@ -50,12 +52,19 @@ struct ManticoreDff : public Pass {
 			auto dff = m_module->addDff(fresh("dff_cast"), cell->getPort(ID::CLK), cell->getPort(ID::D), cell->getPort(ID::Q),
 						    cell->getParam(ID::CLK_POLARITY).as_bool());
 			dff->setPort(ID::CLK, cell->getPort(ID::CLK));
-			dff->setPort(ID::Q, cell->getPort(ID::Q));
+			// dff->setPort(ID::Q, cell->getPort(ID::Q));
 			dff->setParam(ID::CLK_POLARITY, cell->getParam(ID::CLK_POLARITY));
 			dff->attributes.swap(cell->attributes);
 
 			return dff;
 		}
+		Cell *sDffCast(Cell *cell)
+		{
+			auto dff = dffCast(cell);
+			dff->setPort(ID::Q, cell->getPort(ID::Q));
+			return dff;
+		}
+
 		SigSpec muxed(const SigSpec &A, const SigSpec &B, const SigSpec &S, bool polarity)
 		{
 			auto y_size = A.size();
@@ -90,7 +99,7 @@ struct ManticoreDff : public Pass {
 		for (auto cell : convertibles) {
 
 			if (cell->type == ID($dffe)) {
-				auto dff = builder.dffCast(cell);
+				auto dff = builder.sDffCast(cell);
 				auto en_pol = cell->getParam(ID::EN_POLARITY).as_bool();
 				auto q_sig = dff->getPort(ID::Q);
 				auto d_sig = cell->getPort(ID::D);
@@ -99,7 +108,7 @@ struct ManticoreDff : public Pass {
 				mod->remove(cell);
 
 			} else if (cell->type == ID($sdff)) {
-				auto dff = builder.dffCast(cell);
+				auto dff = builder.sDffCast(cell);
 				auto srst_pol = cell->getParam(ID::SRST_POLARITY).as_bool();
 				auto srst_value = SigSpec(cell->getParam(ID::SRST_VALUE));
 				auto d_sig = cell->getPort(ID::D);
@@ -108,7 +117,7 @@ struct ManticoreDff : public Pass {
 				mod->remove(cell);
 
 			} else if (cell->type == ID($sdffe)) {
-				auto dff = builder.dffCast(cell);
+				auto dff = builder.sDffCast(cell);
 				auto srst_pol = cell->getParam(ID::SRST_POLARITY).as_bool();
 				auto en_pol = cell->getParam(ID::EN_POLARITY).as_bool();
 				auto q_sig = dff->getPort(ID::Q);
@@ -121,7 +130,7 @@ struct ManticoreDff : public Pass {
 
 			} else if (cell->type == ID($sdffce)) {
 
-				auto dff = builder.dffCast(cell);
+				auto dff = builder.sDffCast(cell);
 				auto srst_pol = cell->getParam(ID::SRST_POLARITY).as_bool();
 				auto en_pol = cell->getParam(ID::EN_POLARITY).as_bool();
 				auto q_sig = dff->getPort(ID::Q);
@@ -132,7 +141,48 @@ struct ManticoreDff : public Pass {
 				dff->setPort(ID::D, din);
 				mod->remove(cell);
 
-			} else {
+			} else if (cell->type == ID($adff)) {
+				// the difference here is that we put the MUX of the reset at the
+				// Q port AND the D port
+				auto dff = builder.dffCast(cell);
+				auto arst_pol = cell->getParam(ID::ARST_POLARITY).as_bool();
+
+				auto arst_value = SigSpec(cell->getParam(ID::ARST_VALUE));
+				auto q_sig = cell->getPort(ID::Q);
+				auto d_sig = cell->getPort(ID::D);
+				auto arst_sig = cell->getPort(ID::ARST);
+				// put a mux before of the dff
+				auto din = builder.muxed(d_sig, arst_value, arst_sig, arst_pol);
+				dff->setPort(ID::D, din);
+
+				// and put another mux after the dff
+				auto qout = mod->addWire(builder.fresh("qout"), q_sig.size());
+				dff->setPort(ID::Q, qout);
+				mod->addMux(builder.fresh("arst_mux"), arst_pol ? qout : arst_value, arst_pol ? arst_value : qout, arst_sig, cell->getPort(ID::Q));
+
+				mod->remove(cell);
+
+			} else if (cell->type == ID($adffe)) {
+				// reset has priority over enable
+				auto dff = builder.dffCast(cell);
+				auto arst_pol = cell->getParam(ID::ARST_POLARITY).as_bool();
+				auto en_pol = cell->getParam(ID::EN_POLARITY).as_bool();
+				auto arst_value = SigSpec(cell->getParam(ID::ARST_VALUE));
+				auto q_sig = cell->getPort(ID::Q);
+				auto d_sig = cell->getPort(ID::D);
+				auto arst_sig = cell->getPort(ID::ARST);
+				// put a mux before of the dff
+
+				auto din = builder.muxed(builder.muxed(q_sig, d_sig, cell->getPort(ID::EN), en_pol), arst_value, arst_sig, arst_pol);
+				dff->setPort(ID::D, din);
+
+				// and put another mux after the dff
+				auto qout = mod->addWire(builder.fresh("qout"), q_sig.size());
+				dff->setPort(ID::Q, qout);
+				mod->addMux(builder.fresh("arst_mux"), arst_pol ? qout : arst_value, arst_pol ? arst_value : qout, arst_sig, cell->getPort(ID::Q));
+
+				mod->remove(cell);
+			}  else {
 				log_abort();
 			}
 		}
