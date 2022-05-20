@@ -571,7 +571,6 @@ struct ManticoreAssemblyWorker {
 		checker.assertSignedOperandsRequireEqualWidth();
 		checker.assertEqualSigns();
 
-
 		auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
 		auto b_signed = cell->getParam(ID::B_SIGNED).as_bool();
 
@@ -582,8 +581,7 @@ struct ManticoreAssemblyWorker {
 			checker.assertEqualWidth();
 			instr.SLTS(res, convert(cell->getPort(op1_port)), convert(cell->getPort(op2_port)));
 		} else {
-			auto w = std::max(cell->getParam(ID::A_WIDTH).as_int(),
-									 cell->getParam(ID::B_WIDTH).as_int());
+			auto w = std::max(cell->getParam(ID::A_WIDTH).as_int(), cell->getParam(ID::B_WIDTH).as_int());
 			instr.SLT(res, padConvert(cell->getPort(op1_port), w), padConvert(cell->getPort(op2_port), w));
 		}
 	}
@@ -802,7 +800,7 @@ struct ManticoreAssemblyWorker {
 				instr.PADZERO(y_name, tmp, y_width);
 			}
 
-		}  else if (cell->type == ID($logic_and) || cell->type == ID($logic_or)) {
+		} else if (cell->type == ID($logic_and) || cell->type == ID($logic_or)) {
 
 			checker.assertBothUnsigned();
 
@@ -892,9 +890,69 @@ struct ManticoreAssemblyWorker {
 			instr.ADD(load_addr, def_wire.getMemory(mem), addr_name);
 			instr.emit(sourceInfo(cell));
 			instr.LOAD(data_name, load_addr);
+		} else if (cell->type.in(ID($sshl), ID($shl))) {
+
+			log_assert(cell->getParam(ID::B_SIGNED).as_bool() == false);
+
+			instr.SLL(convert(cell->getPort(ID::Y)), convert(cell->getPort(ID::A)), convert(cell->getPort(ID::B)));
+
+		} else if (cell->type == ID($shr)) {
+
+			log_assert(cell->getParam(ID::B_SIGNED).as_bool() == false);
+			instr.SRL(convert(cell->getPort(ID::Y)), convert(cell->getPort(ID::A)), convert(cell->getPort(ID::B)));
+
+		} else if (cell->type == ID($sshr)) {
+
+			log_assert(cell->getParam(ID::B_SIGNED).as_bool() == false);
+			auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
+			auto a_name = convert(cell->getPort(ID::A));
+			auto b_name = convert(cell->getPort(ID::B));
+			auto y_name = convert(cell->getPort(ID::Y));
+			if (a_signed) {
+				instr.SRA(y_name, a_name, b_name);
+			} else {
+				instr.SRL(y_name, a_name, b_name);
+			}
+
+		} else if (cell->type == ID($shift)) {
+
+			// although the following implementation maybe correct, I don't have
+			// have a way of testing this so I am going to throw an error so that
+			// anybody you finds a circuit that creates this cell has to deal
+			// with validating the implementation
+			log("Can not generate code for %s.%s of type %s\n", log_id(mod), log_id(cell), log_id(cell->type));
+			log_error("Our Yosys' code generator may have a valid translation for $shift and $shiftx but up to know I did not know of "
+				  "any circuit that results in these cell. Please submit your Verilog files as a git issue so we can patch and test "
+				  "our compiler.");
+			auto b_signed = cell->getParam(ID::B_SIGNED).as_bool();
+			auto a_name = convert(cell->getPort(ID::A));
+			auto b_name = convert(cell->getPort(ID::B));
+			auto y_name = convert(cell->getPort(ID::Y));
+			if (!b_signed) {
+				instr.SRL(y_name, a_name, b_name);
+			} else {
+				// get the sign bit
+				auto a_width = cell->getParam(ID::A_WIDTH).as_int();
+				auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
+
+				auto sel = def_wire.temp(1);
+				instr.SRL(sel, a_name, def_const.get(Const(a_width - 1, 32)));
+				auto r1 = def_wire.temp(y_width);
+				auto r2 = def_wire.temp(y_width);
+				// perform a right logical shift if B is positive
+				instr.SRL(r1, a_name, b_name);
+				// or do a left logical shift if B is negative but
+				// use the positive representation of B
+				auto b_width = cell->getParam(ID::B_WIDTH).as_int();
+				auto b_not = def_wire.temp(b_width);
+				instr.XOR(b_not, b_name, def_const.get(Const(State::S1, b_width)));
+				auto b_neg = def_wire.temp(b_width);
+				instr.ADD(b_neg, b_not, def_const.get(Const(1, b_width)));
+				instr.SLL(r2, a_name, b_neg);
+				instr.MUX(y_name, sel, r1, r2);
+			}
 
 		} else if (cell->type == ID($memwr_v2)) {
-
 
 			log_assert(cell->getParam(ID::TRANSPARENCY_MASK).is_fully_zero());
 			log_assert(cell->getParam(ID::COLLISION_X_MASK).is_fully_zero());

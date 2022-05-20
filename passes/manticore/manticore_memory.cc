@@ -628,7 +628,7 @@ struct ManticoreMemory : public Pass {
 		// and
 		log_header(design, "Executing Manticore Memory Normalization and Optimization Pass\n");
 		Pass::call(design, "memory_share");
-		Pass::call(design, "write_rtlil pre.rtlil");
+
 
 		std::unique_ptr<ManticoreMemoryWorker> worker(new ManticoreMemoryWorker(design));
 		worker->transform();
