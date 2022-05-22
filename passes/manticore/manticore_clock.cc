@@ -36,7 +36,8 @@ OptionalClock checkClock(Design *design, Module *mod, const OptionalClock &assum
 				     ID($dlatchsr), // terrible stuff
 				     ID($adffe),    // terrible stuff
 				     ID($aldff),    // terrible stuff
-				     ID($aldffe)
+				     ID($aldffe),
+					 ID($memwr_v2)
 
 		);
 	};

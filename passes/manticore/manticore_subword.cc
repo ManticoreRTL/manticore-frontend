@@ -31,7 +31,7 @@ struct ManticoreSubword : public Pass {
 	void transform(Module *mod)
 	{
 		int name_index = 0;
-		auto freshName = [&](const std::string &prefix) { return mod->uniquify(stringf("$%s$", prefix.c_str()), name_index); };
+		// auto freshName = [&](const std::string &prefix) { return mod->uniquify(stringf("$%s$", prefix.c_str()), name_index); };
 
 		dict<Wire *, std::vector<std::pair<SigChunk, SigChunk>>> subwords;
 		for (auto cell : mod->cells()) {
@@ -40,7 +40,7 @@ struct ManticoreSubword : public Pass {
 				auto sig = con.second;
 				if (cell->output(port_name) && !sig.is_wire()) {
 
-					auto alias_wire = mod->addWire(freshName("subword_out"), sig.size());
+					auto alias_wire = mod->addWire(NEW_ID_SUFFIX("subword_out"), sig.size());
 					cell->setPort(port_name, alias_wire);
 
 					log("Replacing %s.%s.%s => %s with %s\n", log_id(mod), log_id(cell), log_id(port_name), log_signal(sig),
@@ -53,7 +53,8 @@ struct ManticoreSubword : public Pass {
 						if (chunk.is_wire()) {
 							subwords[chunk.wire].emplace_back(chunk, SigChunk(alias_wire, offset, chunk.width));
 						} else {
-							log_error("%s.%s.%s => %s assigns to contant\n", log_id(mod), log_id(cell), log_id(port_name), log_signal(sig));
+							log_error("%s.%s.%s => %s assigns to contant\n", log_id(mod), log_id(cell), log_id(port_name),
+								  log_signal(sig));
 						}
 						offset += chunk.width;
 					}
@@ -70,7 +71,7 @@ struct ManticoreSubword : public Pass {
 				new_connections.push_back(con);
 			} else {
 				// connection assign to a subword
-				auto alias_wire = mod->addWire(freshName("subword_lhs"), lhs.size());
+				auto alias_wire = mod->addWire(NEW_ID_SUFFIX("subword_lhs"), lhs.size());
 				log("Replacing %s with %s\n", log_signal(lhs), log_signal(alias_wire));
 
 				auto chunks = lhs.chunks();
@@ -79,7 +80,8 @@ struct ManticoreSubword : public Pass {
 					if (chunk.is_wire()) {
 						subwords[chunk.wire].emplace_back(chunk, SigChunk(alias_wire, offset, chunk.width));
 					} else {
-						log_error("In %s connect %s %s assigns to contant\n", log_id(mod), log_signal(lhs), log_signal(con.second));
+						log_error("In %s connect %s %s assigns to contant\n", log_id(mod), log_signal(lhs),
+							  log_signal(con.second));
 					}
 					offset += chunk.width;
 				}
@@ -88,8 +90,13 @@ struct ManticoreSubword : public Pass {
 		}
 
 		// now we have to go through the list all the wires that have subword
-		// assignments and create a single word assignment. We should also
-		// error out or give a warning if some chunks of a wire are not assigned
+		// assignments and create a SigSpec that fully defines the word. However,
+		// we do not create a connection here since this may lead to introducing
+		// a cycle if we have something like:
+		// connect $swire [0] some_other_wire;
+		// connect $swire [1:0] { $swire [2] $swire [2]}
+
+		dict<Wire *, SigSpec> resolved_subwords;
 		for (const auto &subword : subwords) {
 
 			auto wire = subword.first;
@@ -101,15 +108,54 @@ struct ManticoreSubword : public Pass {
 					resolved_sig[ix + chunk.offset] = driver[ix];
 				}
 			}
-			auto has_undefined_bit =
-			  std::any_of(resolved_sig.begin(), resolved_sig.end(), [](const SigBit &b) { return b == SigBit(State::Sx); });
-			if (has_undefined_bit) {
+
+			if (!resolved_sig.is_fully_def()) {
 				log_warning("%s.%s has undriven bits\n", log_id(mod), log_id(wire->name));
 			}
-			new_connections.emplace_back(SigSpec(wire), resolved_sig);
+			resolved_subwords.emplace(wire, resolved_sig);
+		}
+		// At this point we know exactly what drives each wire that have subword
+		// assignment. We should go through the whole netlist RHS and input signals
+		// and replace them with the new wires we have created so far with the
+		// resolved SigSpec for each wire
+
+		auto resolveRhs = [&resolved_subwords](const SigSpec &rhs) -> SigSpec {
+			auto chunks = rhs.chunks();
+			SigSpec resolved;
+			for (const auto &chunk : chunks) {
+				if (chunk.is_wire() && resolved_subwords.count(chunk.wire)) {
+					auto driver = resolved_subwords[chunk.wire];
+					for (int i = chunk.offset; i < chunk.width + chunk.offset; i++) {
+						resolved.append(driver[i]);
+					}
+				} else {
+					resolved.append(chunk);
+				}
+			}
+			return resolved;
+		};
+
+		for (auto cell : mod->cells()) {
+			for (auto &con : cell->connections()) {
+				auto port_name = con.first;
+				auto sig_in = con.second;
+				if (cell->input(port_name)) {
+					cell->setPort(port_name, resolveRhs(sig_in));
+				}
+			}
 		}
 
-		mod->new_connections(new_connections);
+		std::vector<SigSig> resolved_connections;
+		for (const auto &con : new_connections) {
+			auto rhs = con.second;
+			resolved_connections.emplace_back(con.first, resolveRhs(rhs));
+		}
+		for(const auto& alias :  resolved_subwords) {
+
+			resolved_connections.emplace_back(SigSpec(alias.first), alias.second);
+		}
+
+		mod->new_connections(resolved_connections);
 	}
 } ManticoreSubword;
 

@@ -171,8 +171,10 @@ struct ModuleTransformer {
 			log_assert(current_driver.empty());
 			return walker->sigmap(data_bit);
 		}
-		log_assert(current_driver.nonEmpty());
-
+		if (current_driver.empty()) {
+			// no body drives this bit, so return itself.
+			return data_bit;
+		}
 		while (current_driver.nonEmpty()) {
 			if (current_driver.cell->type == ID($mux)) {
 				auto port_S = current_driver.cell->getPort(ID::S);
@@ -187,12 +189,11 @@ struct ModuleTransformer {
 					}
 				} else {
 					// conditions match don't match
-					log_error("Unexpected condition on memwr_v2 DATA in cell %s path!",
-						  RTLIL::id2cstr(current_driver.cell->name));
+					current_data_bit =  data_bit;
 					current_driver = Driver::None();
 				}
 			} else {
-				log_error("Expected MUX on the DATA path of memwr_v2 starting from %s\n", RTLIL::id2cstr(data_bit.wire->name));
+				current_data_bit =  data_bit;
 				current_driver = Driver::None();
 			}
 		}
@@ -480,7 +481,9 @@ struct ModuleTransformer {
 			if (cell->type == ID($mem_v2)) {
 				log_error("Can not handle $mem_v2! Did you run memory_collect before manticore_memory?");
 			} else if (cell->type == ID($memrd)) {
-				log_error("Can not handle $memrd cell %s\n", RTLIL::id2cstr(cell->name));
+				// log_error("Can not handle $memrd cell %s\n", RTLIL::id2cstr(cell->name));
+				auto mid = cell->getParam(ID::MEMID);
+				memrds[mid].push_back(cell);
 			} else if (cell->type == ID($memrd_v2)) {
 				// ensure memory read nodes are always asynchronous
 				if (cell->getParam(ID::CLK_ENABLE).as_bool()) {
@@ -541,7 +544,7 @@ struct ModuleTransformer {
 					new_rd_cell->setParam(ID::ABITS, wr_cell->getParam(ID::ABITS));
 					new_rd_cell->setParam(ID::ARST_VALUE, Const(State::Sx, wr_cell->getParam(ID::WIDTH).as_int()));
 					new_rd_cell->setParam(ID::CE_OVER_SRST, Const(State::S0, 1));
-					new_rd_cell->setParam(ID::CLK_ENABLE, Const(State::S0, 1));
+					new_rd_cell->setParam(ID::CLK_ENABLE, Const(State::Sx, 1));
 					new_rd_cell->setParam(ID::CLK_POLARITY, wr_cell->getParam(ID::CLK_POLARITY));
 					new_rd_cell->setParam(ID::COLLISION_X_MASK, Const(State::S0, 1));
 					new_rd_cell->setParam(ID::INIT_VALUE, Const(State::Sx, wr_cell->getParam(ID::WIDTH).as_int()));

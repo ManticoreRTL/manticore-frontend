@@ -963,8 +963,7 @@ struct ManticoreAssemblyWorker {
 
 		} else if (cell->type == ID($memwr_v2)) {
 
-			log_assert(cell->getParam(ID::TRANSPARENCY_MASK).is_fully_zero());
-			log_assert(cell->getParam(ID::COLLISION_X_MASK).is_fully_zero());
+			log_assert(cell->getParam(ID::PRIORITY_MASK).is_fully_undef());
 
 			// because of the manticore_memory pass we have the guarantee
 			// that the we can use teh enable bit 0 as the enable, i.e., there
