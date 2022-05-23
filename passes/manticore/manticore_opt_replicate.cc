@@ -65,6 +65,11 @@ struct MantcoreOptimizeBitReplication : public Pass {
 		for (auto cell : cells) {
 			for (auto &con : cell->connections()) {
 				auto port_name = con.first;
+				if (cell->type == ID($memwr_v2) && port_name == ID::EN) {
+					// we want to keep the memory write enables as they are
+					// because we deal with them at code generation time
+					continue;
+				}
 				if (cell->input(port_name)) {
 					log("checking port %s of %s\n", RTLIL::id2cstr(port_name), RTLIL::id2cstr(cell->name));
 					auto rhs = con.second;

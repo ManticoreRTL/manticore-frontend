@@ -109,9 +109,9 @@ struct ManticoreSubword : public Pass {
 				}
 			}
 
-			if (!resolved_sig.is_fully_def()) {
-				log_warning("%s.%s has undriven bits\n", log_id(mod), log_id(wire->name));
-			}
+			// if (!resolved_sig.is_fully_def()) {
+			// 	log_warning("%s.%s has undriven bits\n", log_id(mod), log_id(wire->name));
+			// }
 			resolved_subwords.emplace(wire, resolved_sig);
 		}
 		// At this point we know exactly what drives each wire that have subword

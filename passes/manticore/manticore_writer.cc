@@ -147,10 +147,14 @@ struct WireBuilder {
 		log_assert(dff->type == ID($dff));
 		if (!states.count(dff)) {
 			int width = dff->getParam(ID::WIDTH).as_int();
+			auto r_name = namer.next("r");
 			auto q_name = namer.next("i");
 			auto d_name = namer.next("o");
-
-			regs << "\t.reg " << dff->name.str() << " " << width << " .input " << q_name << " ";
+			auto srcinfo = sourceInfo(dff);
+			if (!srcinfo.empty()) {
+				defs << "\t" << srcinfo << std::endl;
+			}
+			regs << "\t.reg " << r_name << " " << width << " .input " << q_name << " ";
 			if (dff->has_attribute(ID::INIT)) {
 				auto initval = dff->get_const_attribute(ID::INIT);
 				std::vector<RTLIL::State> bits;
@@ -193,9 +197,12 @@ struct WireBuilder {
 				     << ", count = " << mem->size << "]" << std::endl;
 			}
 
-			std::string mem_name = mem->name.str();
-
-			mems << "\t.mem " << mem_name << " " << bitLength(mem->size - 1) << std::endl;
+			std::string mem_name = namer.next("m");
+			auto srcinfo = sourceInfo(mem);
+			if (!srcinfo.empty()) {
+				defs << "\t" << srcinfo << std::endl;
+			}
+			mems << "\t.mem " << mem_name << " " << mem->width << " " << mem->size << std::endl;
 
 			memories[mem] = mem_name;
 		}
@@ -246,13 +253,13 @@ struct InstructionBuilder {
 	int interrupt_order = 0;
 	InstructionBuilder() : interrupt_order(0) {}
 
-	inline void LOAD(const std::string &rd, const std::string &base, const std::string &mem, int order)
+	inline void LOAD(const std::string &rd, const std::string &addr, const std::string &mem, int order)
 	{
-		builder << "\t(" << mem << ", " << order << ") LLD " << rd << ", " << base << "[0];" << std::endl;
+		builder << "\t(" << mem << ", " << order << ") LLD " << rd << ", " << mem << "[ " << addr << " ];" << std::endl;
 	}
-	inline void STORE(const std::string &rs, const std::string &base, const std::string &pred, const std::string &mem, int order)
+	inline void STORE(const std::string &rs, const std::string &addr, const std::string &pred, const std::string &mem, int order)
 	{
-		builder << "\t(" << mem << ", " << order << ") LST " << rs << ", " << base << "[0], " << pred << ";" << std::endl;
+		builder << "\t(" << mem << ", " << order << ") LST " << rs << ", " << mem << "[ " << addr << " ], " << pred << ";" << std::endl;
 	}
 	inline void PADZERO(const std::string &rd, const std::string &rs, int width)
 	{
@@ -1034,7 +1041,7 @@ struct ManticoreAssemblyWorker {
 	{
 
 		auto mem = mod->memories[memid];
-		auto addr_bits = bitLength(mem->size);
+		auto addr_bits = bitLength(mem->size - 1);
 
 		log_assert(mem->start_offset == 0);
 		auto read_operations = memory_reads[memid];
@@ -1042,6 +1049,8 @@ struct ManticoreAssemblyWorker {
 		auto mem_name = def_wire.getMemory(mem);
 
 		auto memblock_annon = stringf("@MEMBLOCK [ block = \"%s\", width = %d, capacity = %d ]", memid.c_str(), mem->width, mem->size);
+
+
 		for (auto rd_cell : read_operations) {
 
 			// log_assert(rd_cell->getParam(ID::ARST_VALUE).is)
@@ -1055,15 +1064,14 @@ struct ManticoreAssemblyWorker {
 			log_assert(rd_cell->getParam(ID::TRANSPARENCY_MASK).is_fully_zero());
 			log_assert(rd_cell->getParam(ID::WIDTH).as_int() == mem->width);
 			log_assert(rd_cell->getParam(ID::ABITS).as_int() == addr_bits);
+
 			log_assert(rd_cell->getPort(ID::EN).is_fully_ones());
-			auto base_name = def_wire.temp(addr_bits);
 
 			auto addr_name = convert(rd_cell->getPort(ID::ADDR));
 
-			instr.ADD(base_name, addr_name, mem_name);
 			instr.emit(sourceInfo(rd_cell));
 			instr.emit(memblock_annon);
-			instr.LOAD(convert(rd_cell->getPort(ID::DATA)), base_name, mem_name, 0);
+			instr.LOAD(convert(rd_cell->getPort(ID::DATA)), addr_name, mem_name, 0);
 		}
 		auto write_operations = memory_writes[memid];
 
@@ -1072,7 +1080,8 @@ struct ManticoreAssemblyWorker {
 			  [](Cell *cell1, Cell *cell2) { return cell1->getParam(ID::PORTID).as_int() < cell2->getParam(ID::PORTID).as_int(); });
 		for (auto wr_cell : write_operations) {
 
-			log_assert(wr_cell->getParam(ID::CLK_ENABLE).is_fully_ones());
+
+			log_assert(wr_cell->getParam(ID::CLK_ENABLE).as_bool());
 			log_assert(wr_cell->getParam(ID::WIDTH).as_int() == mem->width);
 			log_assert(wr_cell->getParam(ID::ABITS).as_int() == addr_bits);
 
@@ -1085,20 +1094,20 @@ struct ManticoreAssemblyWorker {
 
 			bool is_full_repeat = pattern.size() == 1;
 
-			auto base_name = def_wire.temp(addr_bits);
+
 			auto addr_name = convert(wr_cell->getPort(ID::ADDR));
-			instr.ADD(base_name, addr_name, mem_name);
+
 			int order = 1;
 			if (!en_sig.is_fully_ones() && is_full_repeat) {
 
 				instr.emit(sourceInfo(wr_cell));
 				auto predicate = convert(SigSpec(pattern.front().bit));
-				instr.STORE(convert(wr_cell->getPort(ID::DATA)), base_name, predicate, mem_name, order++);
+				instr.STORE(convert(wr_cell->getPort(ID::DATA)), addr_name, predicate, mem_name, order++);
 				// easy case
 			} else if (!en_sig.is_fully_ones() && !is_full_repeat) {
 				// load the original value
 				auto original_value = def_wire.temp(mem->width);
-				instr.LOAD(original_value, base_name, mem_name, order++);
+				instr.LOAD(original_value, addr_name, mem_name, order++);
 				auto write_word = convert(wr_cell->getPort(ID::DATA));
 				auto createMask = [&](const manticore::RepeatPattern &p, bool write_data_mask = false) -> Const {
 					auto mask = Const(write_data_mask ? State::S0 : State::S1, mem->width);
@@ -1120,7 +1129,7 @@ struct ManticoreAssemblyWorker {
 						instr.OR(combined_word, wdata, rdata);
 						instr.emit(sourceInfo(wr_cell));
 						auto pred = convert(SigSpec(en_part.bit));
-						instr.STORE(combined_word, base_name, pred, mem_name, order++);
+						instr.STORE(combined_word, addr_name, pred, mem_name, order++);
 					} else {
 
 						// either we have en_part.bit.data == State::S0 or State::Sx;
@@ -1150,6 +1159,10 @@ struct ManticoreAssemblyWorker {
 
 		for (auto cell : syscalls) {
 			convertSyscall(cell);
+		}
+
+		for (const auto& m : mod->memories) {
+			convertMemoryCell(m.first);
 		}
 
 		for (const auto &con : mod->connections()) {
