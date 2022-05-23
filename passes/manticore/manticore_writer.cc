@@ -1,3 +1,4 @@
+#include "kernel/mem.h"
 #include "kernel/modtools.h"
 #include "kernel/yosys.h"
 #include "passes/manticore/manticore_utils.h"
@@ -245,10 +246,13 @@ struct InstructionBuilder {
 	int interrupt_order = 0;
 	InstructionBuilder() : interrupt_order(0) {}
 
-	inline void LOAD(const std::string &rd, const std::string &base) { builder << "\tLLD " << rd << ", " << base << "[0];" << std::endl; }
-	inline void STORE(const std::string &rs, const std::string &base, const std::string &pred)
+	inline void LOAD(const std::string &rd, const std::string &base, const std::string &mem, int order)
 	{
-		builder << "\tLST " << rs << ", " << base << "[0], " << pred << ";" << std::endl;
+		builder << "\t(" << mem << ", " << order << ") LLD " << rd << ", " << base << "[0];" << std::endl;
+	}
+	inline void STORE(const std::string &rs, const std::string &base, const std::string &pred, const std::string &mem, int order)
+	{
+		builder << "\t(" << mem << ", " << order << ") LST " << rs << ", " << base << "[0], " << pred << ";" << std::endl;
 	}
 	inline void PADZERO(const std::string &rd, const std::string &rs, int width)
 	{
@@ -281,19 +285,19 @@ struct InstructionBuilder {
 
 	inline void PUT(const std::string &rs, const std::string &pred)
 	{
-		builder << "\t(0, " << interrupt_order++ << ") PUT " << rs << ", " << pred << ";" << std::endl;
+		builder << "\t(" << interrupt_order++ << ") PUT " << rs << ", " << pred << ";" << std::endl;
 	}
 
 	inline void FLUSH(const std::string &fmt, const std::string &pred)
 	{
-		builder << "\t(0, " << interrupt_order++ << ") FLUSH \"" << fmt << "\", " << pred << ";" << std::endl;
+		builder << "\t(" << interrupt_order++ << ") FLUSH \"" << fmt << "\", " << pred << ";" << std::endl;
 	}
 
-	inline void FINISH(const std::string &pred) { builder << "\t(0, " << interrupt_order++ << ") FINISH " << pred << ";" << std::endl; }
+	inline void FINISH(const std::string &pred) { builder << "\t(" << interrupt_order++ << ") FINISH " << pred << ";" << std::endl; }
 
-	inline void ASSERT(const std::string &pred) { builder << "\t(0, " << interrupt_order++ << ") ASSERT " << pred << ";" << std::endl; }
+	inline void ASSERT(const std::string &pred) { builder << "\t(" << interrupt_order++ << ") ASSERT " << pred << ";" << std::endl; }
 
-	inline void STOP(const std::string &pred) { builder << "\t(0, " << interrupt_order++ << ") STOP " << pred << ";" << std::endl; }
+	inline void STOP(const std::string &pred) { builder << "\t(" << interrupt_order++ << ") STOP " << pred << ";" << std::endl; }
 
 #define BINOP_DEF(op)                                                                                                                                \
 	inline void op(const std::string &rd, const std::string &rs1, const std::string &rs2)                                                        \
@@ -343,7 +347,10 @@ struct ManticoreAssemblyWorker {
 	// a place holder for systemcall. We need to first emit any other instruction
 	// and then emit system calls in correct order.
 	std::vector<Cell *> syscalls;
+	// a place holder for memory load/store nodes
 
+	dict<IdString, std::vector<Cell *>> memory_writes;
+	dict<IdString, std::vector<Cell *>> memory_reads;
 	ManticoreAssemblyWorker(const std::string &filename, Design *design)
 	    : filename(filename), design(design), mod(design->top_module()), sigmap(design->top_module()), def_const(design->top_module()),
 	      def_wire(design->top_module())
@@ -876,29 +883,6 @@ struct ManticoreAssemblyWorker {
 			}
 			instr.emit(sourceInfo(cell));
 			instr.PARMUX(convert(cell->getPort(ID::Y)), cases, a_name, conditions);
-		} else if (cell->type == ID($memrd_v2)) {
-
-			log_assert(cell->getParam(ID::CLK_ENABLE).is_fully_zero());
-			log_assert(cell->getParam(ID::TRANSPARENCY_MASK).is_fully_zero());
-			log_assert(cell->getParam(ID::COLLISION_X_MASK).is_fully_zero());
-			log_assert(cell->getParam(ID::INIT_VALUE).is_fully_undef());
-			log_assert(cell->getParam(ID::ARST_VALUE).is_fully_undef());
-			log_assert(cell->getParam(ID::SRST_VALUE).is_fully_undef());
-			log_assert(cell->getParam(ID::CE_OVER_SRST).is_fully_zero());
-
-			auto data_name = convert(cell->getPort(ID::DATA));
-			log_assert(cell->getPort(ID::EN).is_fully_ones());
-			auto memid = cell->getParam(ID::MEMID).decode_string();
-			auto mem = mod->memories[memid];
-
-			auto addr_width = std::max(cell->getParam(ID::ABITS).as_int(), bitLength(mem->size - 1));
-
-			auto addr_name = convert(cell->getPort(ID::ADDR));
-
-			auto load_addr = def_wire.temp(addr_width);
-			instr.ADD(load_addr, def_wire.getMemory(mem), addr_name);
-			instr.emit(sourceInfo(cell));
-			instr.LOAD(data_name, load_addr);
 		} else if (cell->type.in(ID($sshl), ID($shl))) {
 
 			log_assert(cell->getParam(ID::B_SIGNED).as_bool() == false);
@@ -963,21 +947,11 @@ struct ManticoreAssemblyWorker {
 
 		} else if (cell->type == ID($memwr_v2)) {
 
-			log_assert(cell->getParam(ID::PRIORITY_MASK).is_fully_undef());
+			memory_writes[IdString(cell->getParam(ID::MEMID).decode_string())].push_back(cell);
 
-			// because of the manticore_memory pass we have the guarantee
-			// that the we can use teh enable bit 0 as the enable, i.e., there
-			// are no "bit-" or "byte-" enables rather, there is a memory line
-			// enable. In other words the EN signal is a fully repeated bit pattern
+		} else if (cell->type == ID($memrd_v2)) {
 
-			auto mem = mod->memories[cell->getParam(ID::MEMID).decode_string()];
-			auto addr_bits = std::max(cell->getParam(ID::ABITS).as_int(), bitLength(mem->size - 1));
-			auto store_addr = def_wire.temp(addr_bits);
-			instr.ADD(store_addr, def_wire.getMemory(mem), convert(cell->getPort(ID::ADDR)));
-			auto en_bit = cell->getPort(ID::EN)[0];
-			auto pred_name = convert(SigSpec(en_bit));
-			instr.emit(sourceInfo(cell));
-			instr.STORE(convert(cell->getPort(ID::DATA)), store_addr, pred_name);
+			memory_reads[IdString(cell->getParam(ID::MEMID).decode_string())].push_back(cell);
 
 		} else if (cell->type == ID($dff)) {
 
@@ -1055,6 +1029,108 @@ struct ManticoreAssemblyWorker {
 			log_error("%s.%s : %s not implemented yet!\n", log_id(mod), log_id(cell), call_type.c_str());
 		}
 	}
+
+	void convertMemoryCell(const IdString &memid)
+	{
+
+		auto mem = mod->memories[memid];
+		auto addr_bits = bitLength(mem->size);
+
+		log_assert(mem->start_offset == 0);
+		auto read_operations = memory_reads[memid];
+
+		auto mem_name = def_wire.getMemory(mem);
+
+		auto memblock_annon = stringf("@MEMBLOCK [ block = \"%s\", width = %d, capacity = %d ]", memid.c_str(), mem->width, mem->size);
+		for (auto rd_cell : read_operations) {
+
+			// log_assert(rd_cell->getParam(ID::ARST_VALUE).is)
+			log_assert(rd_cell->getParam(ID::ARST_VALUE).is_fully_undef());
+			log_assert(rd_cell->getParam(ID::CE_OVER_SRST).as_bool() == false);
+			log_assert(rd_cell->getParam(ID::CLK_ENABLE).as_bool() == false);
+			log_assert(rd_cell->getParam(ID::CLK_POLARITY).as_bool() == false);
+			log_assert(rd_cell->getParam(ID::COLLISION_X_MASK).is_fully_zero());
+			log_assert(rd_cell->getParam(ID::INIT_VALUE).is_fully_undef());
+			log_assert(rd_cell->getParam(ID::SRST_VALUE).is_fully_undef());
+			log_assert(rd_cell->getParam(ID::TRANSPARENCY_MASK).is_fully_zero());
+			log_assert(rd_cell->getParam(ID::WIDTH).as_int() == mem->width);
+			log_assert(rd_cell->getParam(ID::ABITS).as_int() == addr_bits);
+			log_assert(rd_cell->getPort(ID::EN).is_fully_ones());
+			auto base_name = def_wire.temp(addr_bits);
+
+			auto addr_name = convert(rd_cell->getPort(ID::ADDR));
+
+			instr.ADD(base_name, addr_name, mem_name);
+			instr.emit(sourceInfo(rd_cell));
+			instr.emit(memblock_annon);
+			instr.LOAD(convert(rd_cell->getPort(ID::DATA)), base_name, mem_name, 0);
+		}
+		auto write_operations = memory_writes[memid];
+
+		// sort the write by the port id
+		std::sort(write_operations.begin(), write_operations.end(),
+			  [](Cell *cell1, Cell *cell2) { return cell1->getParam(ID::PORTID).as_int() < cell2->getParam(ID::PORTID).as_int(); });
+		for (auto wr_cell : write_operations) {
+
+			log_assert(wr_cell->getParam(ID::CLK_ENABLE).is_fully_ones());
+			log_assert(wr_cell->getParam(ID::WIDTH).as_int() == mem->width);
+			log_assert(wr_cell->getParam(ID::ABITS).as_int() == addr_bits);
+
+			// check the EN signal, if the EN signal is not a fully repeated bit
+			// pattern then create sequences of loads followed by stores to
+			// emulate "bit-strobes".
+
+			auto en_sig = wr_cell->getPort(ID::EN);
+			auto pattern = manticore::getRepeats(en_sig, sigmap);
+
+			bool is_full_repeat = pattern.size() == 1;
+
+			auto base_name = def_wire.temp(addr_bits);
+			auto addr_name = convert(wr_cell->getPort(ID::ADDR));
+			instr.ADD(base_name, addr_name, mem_name);
+			int order = 1;
+			if (!en_sig.is_fully_ones() && is_full_repeat) {
+
+				instr.emit(sourceInfo(wr_cell));
+				auto predicate = convert(SigSpec(pattern.front().bit));
+				instr.STORE(convert(wr_cell->getPort(ID::DATA)), base_name, predicate, mem_name, order++);
+				// easy case
+			} else if (!en_sig.is_fully_ones() && !is_full_repeat) {
+				// load the original value
+				auto original_value = def_wire.temp(mem->width);
+				instr.LOAD(original_value, base_name, mem_name, order++);
+				auto write_word = convert(wr_cell->getPort(ID::DATA));
+				auto createMask = [&](const manticore::RepeatPattern &p, bool write_data_mask = false) -> Const {
+					auto mask = Const(write_data_mask ? State::S0 : State::S1, mem->width);
+					for (int i = p.offset; i < p.offset + p.width; i++) {
+						mask.bits[i] = write_data_mask ? State::S1 : State::S0;
+					}
+					return mask;
+				};
+				for (const auto &en_part : pattern) {
+
+					if (en_part.bit.is_wire() || en_part.bit.data == State::S1) {
+						auto load_mask = createMask(en_part, false);
+						auto store_mask = createMask(en_part, true);
+						auto wdata = def_wire.temp(mem->width);
+						auto rdata = def_wire.temp(mem->width);
+						instr.AND(wdata, write_word, def_const.get(store_mask));
+						instr.AND(rdata, original_value, def_const.get(load_mask));
+						auto combined_word = def_wire.temp(mem->width);
+						instr.OR(combined_word, wdata, rdata);
+						instr.emit(sourceInfo(wr_cell));
+						auto pred = convert(SigSpec(en_part.bit));
+						instr.STORE(combined_word, base_name, pred, mem_name, order++);
+					} else {
+
+						// either we have en_part.bit.data == State::S0 or State::Sx;
+						// so we don't do anything, i.e., we don't store anything
+					}
+				}
+			}
+		}
+	}
+
 	void generate()
 	{
 
