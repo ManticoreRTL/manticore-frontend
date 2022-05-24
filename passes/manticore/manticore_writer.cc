@@ -279,9 +279,9 @@ struct InstructionBuilder {
 			   const std::vector<std::string> &conds)
 	{
 		log_assert(choices.size() == conds.size());
-		builder << "\tPARMUX " << rd;
+		builder << "\tPARMUX " << rd << ", ";
 		for (int i = 0; i < GetSize(choices); i++) {
-			builder << choices[i] << "[" << conds[i] << "], ";
+			builder << conds[i] << " ? " <<  choices[i] << ", ";
 		}
 		builder << def_case << ";" << std::endl;
 	}
