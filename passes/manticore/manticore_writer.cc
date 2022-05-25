@@ -281,7 +281,7 @@ struct InstructionBuilder {
 		log_assert(choices.size() == conds.size());
 		builder << "\tPARMUX " << rd << ", ";
 		for (int i = 0; i < GetSize(choices); i++) {
-			builder << conds[i] << " ? " <<  choices[i] << ", ";
+			builder << conds[i] << " ? " << choices[i] << ", ";
 		}
 		builder << def_case << ";" << std::endl;
 	}
@@ -449,7 +449,7 @@ struct ManticoreAssemblyWorker {
 		 * @return true
 		 * @return false
 		 */
-		inline bool equalWidthPorts() const { return cell->getParam(ID::A_WIDTH) == cell->getParam(ID::B_WIDTH); }
+		inline bool equalOperandWidth() const { return cell->getParam(ID::A_WIDTH) == cell->getParam(ID::B_WIDTH); }
 		/**
 		 * @brief Checks whether both operands have the same sign
 		 *
@@ -481,7 +481,7 @@ struct ManticoreAssemblyWorker {
 		{
 			bool a_signed = cell->getParam(ID::A_SIGNED).as_bool();
 			if (a_signed) {
-				return equalWidthPorts();
+				return equalOperandWidth();
 			} else {
 				return true;
 			}
@@ -490,14 +490,14 @@ struct ManticoreAssemblyWorker {
 		inline bool outputWidthIsMax() const
 		{
 			auto w = std::max(cell->getParam(ID::A_WIDTH).as_int(), cell->getParam(ID::B_WIDTH).as_int());
-			return w == cell->getParam(ID::Y_WIDTH).as_int();
+			return w <= cell->getParam(ID::Y_WIDTH).as_int();
 		}
 
 		inline bool boolOutput() const { return cell->getParam(ID::Y_WIDTH).as_int() == 1; }
 
-		inline void assertEqualWidth() const
+		inline void assertEqualOperandWidth() const
 		{
-			if (!equalWidthPorts()) {
+			if (!equalOperandWidth()) {
 				log_error("Expected equal width operands in cell %s of type %s\n", RTLIL::id2cstr(cell->name),
 					  RTLIL::id2cstr(cell->type));
 			}
@@ -527,8 +527,8 @@ struct ManticoreAssemblyWorker {
 
 		inline void assertAll() const
 		{
-			assertEqualWidth();
-			assertEqualWidth();
+			assertEqualOperandWidth();
+			assertEqualSigns();
 			assertSignedOperandsRequireEqualWidth();
 		}
 
@@ -541,8 +541,7 @@ struct ManticoreAssemblyWorker {
 		inline void assertOutputIsMaxWidth() const
 		{
 			if (!outputWidthIsMax()) {
-				log_error("Expected maximum input width on output in cell %s of type %s\n", RTLIL::id2cstr(cell->name),
-					  RTLIL::id2cstr(cell->type));
+				log_error("Expected maximum width on output in cell %s of type %s\n", RTLIL::id2cstr(cell->name), log_id(cell->type));
 			}
 		}
 	};
@@ -559,22 +558,46 @@ struct ManticoreAssemblyWorker {
 		}
 	}
 
+	std::string sextConvert(const SigSpec &sig, int width)
+	{
+		log_assert(sig.size() <= width);
+		if (sig.size() < width) {
+			auto sign = def_wire.temp(1);
+			auto orig = convert(sig);
+			instr.SRL(sign, orig, def_const.get(Const(sig.size() - 1)));
+
+			auto pos_mask = Const(State::S0, width);
+			auto neg_mask = Const(State::S0, width);
+			for (int i = sig.size(); i < width; i++) {
+				neg_mask.bits[i] = State::S1;
+			}
+
+			auto resolved_mask = def_wire.temp(width);
+			instr.MUX(resolved_mask, sign, def_const.get(pos_mask), def_const.get(neg_mask));
+			auto sextended = def_wire.temp(width);
+			auto zextended = def_wire.temp(width);
+			instr.PADZERO(zextended, orig, width);
+			instr.OR(sextended, zextended, resolved_mask);
+			return sextended;
+		} else {
+			return convert(sig);
+		}
+	}
 	// converts a cell (most likely a $eq or $neq) into SEQ
 	inline void mkSeq(Cell *cell, const std::string &res)
 	{
 
 		auto checker = CellSanityChecker(cell);
 		checker.assertEqualSigns();
-		checker.assertSignedOperandsRequireEqualWidth();
 
-		if (checker.equalWidthPorts()) {
-			// note that the A and B might be negative, but that is OK
-			instr.SEQ(res, convert(cell->getPort(ID::A)), convert(cell->getPort(ID::B)));
+		auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
+		auto a_width = cell->getParam(ID::A_WIDTH).as_int();
+		auto b_width = cell->getParam(ID::B_WIDTH).as_int();
+		auto w = std::max(a_width, b_width);
+		if (a_signed) {
+			instr.SEQ(res, sextConvert(cell->getPort(ID::A), w), sextConvert(cell->getPort(ID::B), w));
 		} else {
-			// ensure both operands are unsigned
-			checker.assertBothUnsigned();
-			auto max_width = std::max(cell->getParam(ID::A_WIDTH).as_int(), cell->getParam(ID::B_WIDTH).as_int());
-			instr.SEQ(res, padConvert(cell->getPort(ID::A), max_width), padConvert(cell->getPort(ID::B), max_width));
+			instr.SEQ(res, padConvert(cell->getPort(ID::A), w), padConvert(cell->getPort(ID::B), w));
 		}
 	}
 
@@ -582,7 +605,7 @@ struct ManticoreAssemblyWorker {
 	{
 
 		auto checker = CellSanityChecker(cell);
-		checker.assertSignedOperandsRequireEqualWidth();
+
 		checker.assertEqualSigns();
 
 		auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
@@ -591,11 +614,12 @@ struct ManticoreAssemblyWorker {
 		auto op1_port = less ? ID::A : ID::B;
 		auto op2_port = less ? ID::B : ID::A;
 
+		auto w = std::max(cell->getParam(ID::A_WIDTH).as_int(), cell->getParam(ID::B_WIDTH).as_int());
+
 		if (a_signed) {
-			checker.assertEqualWidth();
-			instr.SLTS(res, convert(cell->getPort(op1_port)), convert(cell->getPort(op2_port)));
+
+			instr.SLTS(res, sextConvert(cell->getPort(op1_port), w), sextConvert(cell->getPort(op2_port), w));
 		} else {
-			auto w = std::max(cell->getParam(ID::A_WIDTH).as_int(), cell->getParam(ID::B_WIDTH).as_int());
 			instr.SLT(res, padConvert(cell->getPort(op1_port), w), padConvert(cell->getPort(op2_port), w));
 		}
 	}
@@ -607,12 +631,29 @@ struct ManticoreAssemblyWorker {
 	auto a_name = convert(cell->getPort(ID::A));                                                                                                 \
 	auto y_name = convert(cell->getPort(ID::Y));
 
+	std::pair<std::string, std::string> convertBinaryOperands(Cell *cell)
+	{
+
+		auto checker = CellSanityChecker(cell);
+		auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
+		auto a_width = cell->getParam(ID::A_WIDTH).as_int();
+		auto b_width = cell->getParam(ID::B_WIDTH).as_int();
+		auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
+		auto b_signed = cell->getParam(ID::B_SIGNED).as_bool();
+		checker.assertEqualSigns();
+		auto w = std::max(std::max(a_width, b_width), y_width);
+		if (a_signed) {
+			return std::make_pair(sextConvert(cell->getPort(ID::A), w), sextConvert(cell->getPort(ID::B), w));
+		} else {
+			return std::make_pair(padConvert(cell->getPort(ID::A), w), padConvert(cell->getPort(ID::B), w));
+		}
+	}
 	// convert a cell into instructions
 	void convert(Cell *cell)
 	{
 
 		auto checker = CellSanityChecker(cell);
-		auto maxWidth = [cell]() { return std::max(cell->getParam(ID::A_WIDTH).as_int(), cell->getParam(ID::B_WIDTH).as_int()); };
+
 		instr.comment(cell);
 		if (cell->type == ID($not)) {
 			auto width = cell->getParam(ID::A_WIDTH).as_int();
@@ -651,7 +692,7 @@ struct ManticoreAssemblyWorker {
 		} else if (cell->type == ID($reduce_and)) {
 			UNARY_OP_HEADER
 			auto all_ones = def_const.get(Const(State::S1, a_width));
-			log_assert(!a_signed);
+			// log_assert(!a_signed);
 			if (y_width == 1) {
 				instr.SEQ(y_name, a_name, all_ones);
 			} else {
@@ -661,7 +702,7 @@ struct ManticoreAssemblyWorker {
 			}
 		} else if (cell->type == ID($reduce_or) || cell->type == ID($reduce_bool)) {
 			UNARY_OP_HEADER
-			log_assert(!a_signed);
+			// log_assert(!a_signed);
 			auto b0 = def_wire.temp(1);
 			instr.SEQ(b0, a_name, def_const.get(Const(State::S0, a_width)));
 			auto const_true = def_const.get(Const(State::S1, 1));
@@ -678,7 +719,7 @@ struct ManticoreAssemblyWorker {
 
 			UNARY_OP_HEADER
 
-			log_assert(!a_signed);
+			// log_assert(!a_signed);
 			auto prevres = def_wire.temp(1);
 			instr.SLICE(prevres, a_name, 0, 1);
 
@@ -698,7 +739,7 @@ struct ManticoreAssemblyWorker {
 		} else if (cell->type == ID($reduce_xnor)) {
 
 			UNARY_OP_HEADER
-			log_assert(!a_signed);
+			// log_assert(!a_signed);
 
 			auto prevres = def_wire.temp(1);
 			auto const_true = def_const.get(Const(State::S1, 1));
@@ -727,45 +768,43 @@ struct ManticoreAssemblyWorker {
 
 		} else if (cell->type == ID($logic_not)) {
 			UNARY_OP_HEADER
-			log_assert(!a_signed);
-			log_assert(y_width == 1);
-			instr.SEQ(y_name, a_name, def_const.get(Const(State::S0, a_width)));
+
+			if (y_width == 1) {
+				instr.SEQ(y_name, a_name, def_const.get(Const(State::S0, a_width)));
+			} else {
+				auto temp = def_wire.temp(1);
+				instr.SEQ(temp, a_name, def_const.get(Const(State::S0, a_width)));
+				instr.PADZERO(y_name, temp, y_width);
+			}
 		} // end of unary ops
 		  // begin binary ops
 		else if (cell->type == ID($and)) {
-			checker.assertSignedOperandsRequireEqualWidth();
-			checker.assertEqualSigns();
-			auto w = maxWidth();
-			instr.AND(convert(cell->getPort(ID::Y)), padConvert(cell->getPort(ID::A), w), padConvert(cell->getPort(ID::B), w));
+			checker.assertOutputIsMaxWidth();
+			auto operands = convertBinaryOperands(cell);
+			instr.AND(convert(cell->getPort(ID::Y)), operands.first, operands.second);
 		} else if (cell->type == ID($or)) {
-			checker.assertSignedOperandsRequireEqualWidth();
-			checker.assertEqualSigns();
-			auto w = maxWidth();
-			instr.OR(convert(cell->getPort(ID::Y)), padConvert(cell->getPort(ID::A), w), padConvert(cell->getPort(ID::B), w));
+			checker.assertOutputIsMaxWidth();
+			auto operands = convertBinaryOperands(cell);
+			instr.OR(convert(cell->getPort(ID::Y)), operands.first, operands.second);
 		} else if (cell->type == ID($xor)) {
-			checker.assertSignedOperandsRequireEqualWidth();
-			checker.assertEqualSigns();
-			auto w = maxWidth();
-			instr.XOR(convert(cell->getPort(ID::Y)), padConvert(cell->getPort(ID::A), w), padConvert(cell->getPort(ID::B), w));
+			checker.assertOutputIsMaxWidth();
+			auto operands = convertBinaryOperands(cell);
+			instr.XOR(convert(cell->getPort(ID::Y)), operands.first, operands.second);
 		} else if (cell->type == ID($xnor)) {
-			checker.assertSignedOperandsRequireEqualWidth();
-			checker.assertEqualSigns();
-			auto w = maxWidth();
+			checker.assertOutputIsMaxWidth();
+			auto operands = convertBinaryOperands(cell);
 			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
-			log_assert(w = y_width);
 			auto temp = def_wire.temp(y_width);
-			instr.XOR(temp, padConvert(cell->getPort(ID::A), w), padConvert(cell->getPort(ID::B), w));
+			instr.XOR(temp, operands.first, operands.second);
 			instr.XOR(convert(cell->getPort(ID::Y)), temp, def_const.get(Const(State::S1, y_width)));
 		} else if (cell->type == ID($add)) {
-			checker.assertSignedOperandsRequireEqualWidth();
-			// checker.assertEqualWidth(); need not to hold if one operand is a constant
-			checker.assertEqualSigns();
-			instr.ADD(convert(cell->getPort(ID::Y)), convert(cell->getPort(ID::A)), convert(cell->getPort(ID::B)));
+			checker.assertOutputIsMaxWidth();
+			auto operands = convertBinaryOperands(cell);
+			instr.ADD(convert(cell->getPort(ID::Y)), operands.first, operands.second);
 		} else if (cell->type == ID($sub)) {
-			checker.assertSignedOperandsRequireEqualWidth();
-			checker.assertEqualSigns();
-			auto w = maxWidth();
-			instr.SUB(convert(cell->getPort(ID::Y)), padConvert(cell->getPort(ID::A), w), padConvert(cell->getPort(ID::B), w));
+			checker.assertOutputIsMaxWidth();
+			auto operands = convertBinaryOperands(cell);
+			instr.SUB(convert(cell->getPort(ID::Y)), operands.first, operands.second);
 		} else if (cell->type == ID($eq)) {
 
 			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
@@ -825,7 +864,7 @@ struct ManticoreAssemblyWorker {
 
 		} else if (cell->type == ID($logic_and) || cell->type == ID($logic_or)) {
 
-			checker.assertBothUnsigned();
+			// checker.assertBothUnsigned();
 
 			auto a_zero = def_wire.temp(1);
 			auto b_zero = def_wire.temp(1);
@@ -893,25 +932,43 @@ struct ManticoreAssemblyWorker {
 		} else if (cell->type.in(ID($sshl), ID($shl))) {
 
 			log_assert(cell->getParam(ID::B_SIGNED).as_bool() == false);
-
-			instr.SLL(convert(cell->getPort(ID::Y)), convert(cell->getPort(ID::A)), convert(cell->getPort(ID::B)));
+			auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
+			auto a_width = cell->getParam(ID::A_WIDTH).as_int();
+			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
+			auto w = std::max(a_width, y_width);
+			if (a_signed) {
+				instr.SLL(convert(cell->getPort(ID::Y)), sextConvert(cell->getPort(ID::A), w), convert(cell->getPort(ID::B)));
+			} else {
+				instr.SLL(convert(cell->getPort(ID::Y)), padConvert(cell->getPort(ID::A), w), convert(cell->getPort(ID::B)));
+			}
 
 		} else if (cell->type == ID($shr)) {
 
 			log_assert(cell->getParam(ID::B_SIGNED).as_bool() == false);
-			instr.SRL(convert(cell->getPort(ID::Y)), convert(cell->getPort(ID::A)), convert(cell->getPort(ID::B)));
+			auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
+			auto a_width = cell->getParam(ID::A_WIDTH).as_int();
+			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
+			auto w = std::max(a_width, y_width);
+			if (a_signed) {
+
+				instr.SRL(convert(cell->getPort(ID::Y)), sextConvert(cell->getPort(ID::A), w), convert(cell->getPort(ID::B)));
+
+			} else {
+				instr.SRL(convert(cell->getPort(ID::Y)), padConvert(cell->getPort(ID::A), w), convert(cell->getPort(ID::B)));
+			}
 
 		} else if (cell->type == ID($sshr)) {
 
 			log_assert(cell->getParam(ID::B_SIGNED).as_bool() == false);
 			auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
-			auto a_name = convert(cell->getPort(ID::A));
-			auto b_name = convert(cell->getPort(ID::B));
+			auto a_width = cell->getParam(ID::A_WIDTH).as_int();
+			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
 			auto y_name = convert(cell->getPort(ID::Y));
+			auto w = std::max(a_width, y_width);
 			if (a_signed) {
-				instr.SRA(y_name, a_name, b_name);
+				instr.SRA(y_name, sextConvert(cell->getPort(ID::A), w), convert(cell->getPort(ID::B)));
 			} else {
-				instr.SRL(y_name, a_name, b_name);
+				instr.SRL(y_name, padConvert(cell->getPort(ID::A), w), convert(cell->getPort(ID::B)));
 			}
 
 		} else if (cell->type == ID($shift)) {
@@ -1050,7 +1107,6 @@ struct ManticoreAssemblyWorker {
 
 		auto memblock_annon = stringf("@MEMBLOCK [ block = \"%s\", width = %d, capacity = %d ]", memid.c_str(), mem->width, mem->size);
 
-
 		for (auto rd_cell : read_operations) {
 
 			// log_assert(rd_cell->getParam(ID::ARST_VALUE).is)
@@ -1080,7 +1136,6 @@ struct ManticoreAssemblyWorker {
 			  [](Cell *cell1, Cell *cell2) { return cell1->getParam(ID::PORTID).as_int() < cell2->getParam(ID::PORTID).as_int(); });
 		for (auto wr_cell : write_operations) {
 
-
 			log_assert(wr_cell->getParam(ID::CLK_ENABLE).as_bool());
 			log_assert(wr_cell->getParam(ID::WIDTH).as_int() == mem->width);
 			log_assert(wr_cell->getParam(ID::ABITS).as_int() == addr_bits);
@@ -1093,7 +1148,6 @@ struct ManticoreAssemblyWorker {
 			auto pattern = manticore::getRepeats(en_sig, sigmap);
 
 			bool is_full_repeat = pattern.size() == 1;
-
 
 			auto addr_name = convert(wr_cell->getPort(ID::ADDR));
 
@@ -1161,7 +1215,7 @@ struct ManticoreAssemblyWorker {
 			convertSyscall(cell);
 		}
 
-		for (const auto& m : mod->memories) {
+		for (const auto &m : mod->memories) {
 			convertMemoryCell(m.first);
 		}
 
