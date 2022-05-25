@@ -82,6 +82,25 @@ struct ManticoreDff : public Pass {
 		std::vector<Cell *> convertibles;
 		pool<Module *> sub_modules;
 
+		// Try to set the initial values of each state element first
+		SigMap sigmap(mod);
+		FfInitVals initvals(&sigmap, mod);
+
+		for (auto cell : mod->cells()) {
+
+			if (cell->type == ID($dff) || builder.isConvertible(cell)) {
+				SigSpec q_sig = cell->getPort(ID::Q);
+				Const init = initvals(q_sig);
+				if (!init.is_fully_def() == false) {
+
+					cell->set_const_attribute(ID::INIT, init);
+					log("Setting %s.%s.%s (port=%s, net=%s) to %s.\n", log_id(mod), log_id(cell), log_id(ID::INIT), log_id(ID::Q),
+					    log_signal(q_sig), log_const(init));
+				}
+			}
+		}
+
+		// then convert them all into $dffs (remove built-in enable and resets)
 		for (const auto &cell : mod->cells()) {
 			if (builder.isConvertible(cell)) {
 				convertibles.push_back(cell);
@@ -187,23 +206,7 @@ struct ManticoreDff : public Pass {
 			}
 		}
 
-		// now try to set the initial values of each dff
-		SigMap sigmap(mod);
-		FfInitVals initvals(&sigmap, mod);
 
-		for (auto cell : mod->cells()) {
-
-			if (cell->type == ID($dff)) {
-				SigSpec q_sig = cell->getPort(ID::Q);
-				Const init = initvals(q_sig);
-				if (std::any_of(init.bits.begin(), init.bits.end(), [](State s) { return s != State::Sx; })) {
-
-					cell->set_const_attribute(ID::INIT, init);
-					log("Setting %s.%s.%s (port=%s, net=%s) to %s.\n", log_id(mod), log_id(cell), log_id(ID::INIT), log_id(ID::Q),
-					    log_signal(q_sig), log_const(init));
-				}
-			}
-		}
 
 		for (auto sm : sub_modules) {
 			transform(design, sm);
