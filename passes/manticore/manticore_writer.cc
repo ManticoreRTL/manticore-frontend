@@ -609,7 +609,6 @@ struct ManticoreAssemblyWorker {
 		checker.assertEqualSigns();
 
 		auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
-		auto b_signed = cell->getParam(ID::B_SIGNED).as_bool();
 
 		auto op1_port = less ? ID::A : ID::B;
 		auto op2_port = less ? ID::B : ID::A;
@@ -627,7 +626,6 @@ struct ManticoreAssemblyWorker {
 #define UNARY_OP_HEADER                                                                                                                              \
 	auto a_width = cell->getParam(ID::A_WIDTH).as_int();                                                                                         \
 	auto y_width = cell->getParam(ID::Y_WIDTH).as_int();                                                                                         \
-	auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();                                                                                      \
 	auto a_name = convert(cell->getPort(ID::A));                                                                                                 \
 	auto y_name = convert(cell->getPort(ID::Y));
 
@@ -639,7 +637,7 @@ struct ManticoreAssemblyWorker {
 		auto a_width = cell->getParam(ID::A_WIDTH).as_int();
 		auto b_width = cell->getParam(ID::B_WIDTH).as_int();
 		auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
-		auto b_signed = cell->getParam(ID::B_SIGNED).as_bool();
+
 		checker.assertEqualSigns();
 		auto w = std::max(std::max(a_width, b_width), y_width);
 		if (a_signed) {
@@ -661,6 +659,7 @@ struct ManticoreAssemblyWorker {
 			instr.XOR(convert(cell->getPort(ID::Y)), convert(cell->getPort(ID::A)), def_const.get(Const(State::S1, width)));
 		} else if (cell->type == ID($pos)) {
 			UNARY_OP_HEADER
+			auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
 			if (a_signed && a_width < y_width) {
 				// sign extend A
 				auto a_sign = def_wire.temp(1);
@@ -1098,14 +1097,34 @@ struct ManticoreAssemblyWorker {
 	{
 
 		auto mem = mod->memories[memid];
-		auto addr_bits = bitLength(mem->size - 1);
+		auto addr_bits = bitLength(mem->size + mem->start_offset - 1);
 
-		log_assert(mem->start_offset == 0);
+		bool has_lower_bound_check = (mem->start_offset != 0);
+		bool has_upper_bound_check = (mem->size != (1 << addr_bits));
+
+
 		auto read_operations = memory_reads[memid];
 
 		auto mem_name = def_wire.getMemory(mem);
 
-		auto memblock_annon = stringf("@MEMBLOCK [ block = \"%s\", width = %d, capacity = %d ]", memid.c_str(), mem->width, mem->size);
+		auto addrFromLowerBound = [&](Cell* mcell) -> std::string {
+			auto cell_addr = convert(mcell->getPort(ID::ADDR));
+			if (has_lower_bound_check) {
+				auto real_addr = def_wire.temp(addr_bits);
+				instr.SUB(real_addr, cell_addr, def_const.get(Const(mem->start_offset, addr_bits)));
+				return real_addr;
+			} else {
+				return cell_addr;
+			}
+		};
+		auto createBoundOk = [&](const std::string &real_addr) -> std::string {
+			instr.comment("Bound check");
+			auto addr_padded = def_wire.temp(addr_bits + 1);
+			auto bound_ok = def_wire.temp(1);
+			instr.PADZERO(addr_padded, real_addr, addr_bits + 1);
+			instr.SLT(bound_ok, addr_padded, def_const.get(Const(mem->size, addr_bits + 1)));
+			return bound_ok;
+		};
 
 		for (auto rd_cell : read_operations) {
 
@@ -1123,11 +1142,28 @@ struct ManticoreAssemblyWorker {
 
 			log_assert(rd_cell->getPort(ID::EN).is_fully_ones());
 
-			auto addr_name = convert(rd_cell->getPort(ID::ADDR));
-
+			auto addr_name = addrFromLowerBound(rd_cell);
+			auto rdata_name = convert(rd_cell->getPort(ID::DATA));
 			instr.emit(sourceInfo(rd_cell));
-			instr.emit(memblock_annon);
-			instr.LOAD(convert(rd_cell->getPort(ID::DATA)), addr_name, mem_name, 0);
+			if (!has_upper_bound_check) {
+				instr.LOAD(rdata_name, addr_name, mem_name, 0);
+				continue;
+			}
+			// most memories don't require bound checking since their address is guaranteed to be within bounds
+			// but now that we have memory that has bound checks we need to explicitly handle it. Note that
+			// Yosys' memory_memx pass may do the job, but it adds the check even if it is unnecessary! So we have
+			// to handle it ourselves
+			auto rd_width = rd_cell->getParam(ID::WIDTH).as_int();
+			auto raw_rd_name = def_wire.temp(rd_width);
+			instr.LOAD(raw_rd_name, addr_name, mem_name, 0);
+			// note that we still use the potentially out-of-range address so that
+			// we allow Manticore to emit a warning if it wants but we set the final
+			// loaded value to zero if the bound check fails. Though manticore
+			// could only issue a warning for upper bound errors not lower bound
+			// ones since we are subtracting the offset from the address... also
+			// for store we don't do the same...
+			auto bound_ok = createBoundOk(addr_name);
+			instr.MUX(rdata_name, bound_ok, def_const.get(Const(0, rd_width)), raw_rd_name);
 		}
 		auto write_operations = memory_writes[memid];
 
@@ -1149,15 +1185,25 @@ struct ManticoreAssemblyWorker {
 
 			bool is_full_repeat = pattern.size() == 1;
 
-			auto addr_name = convert(wr_cell->getPort(ID::ADDR));
+			auto addr_name = addrFromLowerBound(wr_cell);
 
 			int order = 1;
 			if (!en_sig.is_fully_ones() && is_full_repeat) {
 
 				instr.emit(sourceInfo(wr_cell));
-				auto predicate = convert(SigSpec(pattern.front().bit));
-				instr.STORE(convert(wr_cell->getPort(ID::DATA)), addr_name, predicate, mem_name, order++);
+				const std::string predicate = convert(SigSpec(pattern.front().bit));
+				auto wdata_name = convert(wr_cell->getPort(ID::DATA));
 				// easy case
+				auto checked_predicate = predicate;
+				if (has_upper_bound_check) {
+					// has bound check
+					auto bound_ok = createBoundOk(addr_name);
+					checked_predicate = def_wire.temp(1);
+					instr.AND(checked_predicate, predicate, bound_ok);
+				}
+
+				instr.STORE(wdata_name, addr_name, checked_predicate, mem_name, order++);
+
 			} else if (!en_sig.is_fully_ones() && !is_full_repeat) {
 				// load the original value
 				auto original_value = def_wire.temp(mem->width);
@@ -1182,8 +1228,15 @@ struct ManticoreAssemblyWorker {
 						auto combined_word = def_wire.temp(mem->width);
 						instr.OR(combined_word, wdata, rdata);
 						instr.emit(sourceInfo(wr_cell));
-						auto pred = convert(SigSpec(en_part.bit));
-						instr.STORE(combined_word, addr_name, pred, mem_name, order++);
+						const std::string pred = convert(SigSpec(en_part.bit));
+						auto checked_pred = pred;
+						if (has_upper_bound_check) {
+							// has bound check
+							auto bound_ok = createBoundOk(addr_name);
+							checked_pred = def_wire.temp(1);
+							instr.AND(checked_pred, pred, bound_ok);
+						}
+						instr.STORE(combined_word, addr_name, checked_pred, mem_name, order++);
 					} else {
 
 						// either we have en_part.bit.data == State::S0 or State::Sx;

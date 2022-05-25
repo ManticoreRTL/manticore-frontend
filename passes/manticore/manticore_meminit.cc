@@ -111,12 +111,12 @@ struct ManticoreMemoryInit : public Pass {
 					Const neg_mask = const_not(en_mask, Const(), false, false, mem->width);
 					auto num_words = init_cell->getParam(ID::WORDS).as_int();
 					log("Processing cell %s with %d words at address %d\n", init_cell->name.c_str(), num_words, init_addr);
-					log_assert(num_words + init_addr < mem->size);
+					log_assert(num_words + init_addr - mem->start_offset < mem->size);
 					// split the init_data to the num_words, each containing mem->width bits
 					for (int offset = 0; offset < num_words; offset++) {
 						auto word = init_data.extract(offset * mem->width, mem->width);
 						auto masked = const_and(word, en_mask, false, false, mem->width);
-						int addr = offset + init_addr;
+						int addr = offset + init_addr - mem->start_offset;
 						auto original = resolved[addr];
 						auto orig_masked = const_and(original, neg_mask, false, false, mem->width);
 						resolved[addr] = const_or(masked, orig_masked, false, false, mem->width);
