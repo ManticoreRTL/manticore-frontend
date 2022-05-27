@@ -87,7 +87,7 @@ struct NameBuilder {
 	inline std::string next(const std::string &prefix)
 	{
 
-		auto n = stringf("%%%s%d", prefix.c_str(), index);
+		auto n = stringf("ys_%s%d", prefix.c_str(), index);
 		index++;
 		// log("New name : %s\n", n.c_str());
 		return n;
@@ -1097,32 +1097,33 @@ struct ManticoreAssemblyWorker {
 	{
 
 		auto mem = mod->memories[memid];
-		auto addr_bits = bitLength(mem->size + mem->start_offset - 1);
+		auto mem_addr_bits = bitLength(mem->size + mem->start_offset - 1);
 
 		bool has_lower_bound_check = (mem->start_offset != 0);
-		bool has_upper_bound_check = (mem->size != (1 << addr_bits));
-
+		bool has_upper_bound_check = (mem->size != (1 << mem_addr_bits));
 
 		auto read_operations = memory_reads[memid];
 
 		auto mem_name = def_wire.getMemory(mem);
 
-		auto addrFromLowerBound = [&](Cell* mcell) -> std::string {
+		auto addrFromLowerBound = [&](Cell *mcell) -> std::string {
+			int sig_addr_bits = mcell->getPort(ID::ADDR).size();
 			auto cell_addr = convert(mcell->getPort(ID::ADDR));
 			if (has_lower_bound_check) {
-				auto real_addr = def_wire.temp(addr_bits);
-				instr.SUB(real_addr, cell_addr, def_const.get(Const(mem->start_offset, addr_bits)));
+				auto real_addr = def_wire.temp(sig_addr_bits);
+				instr.SUB(real_addr, cell_addr, def_const.get(Const(mem->start_offset, sig_addr_bits)));
 				return real_addr;
 			} else {
 				return cell_addr;
 			}
 		};
-		auto createBoundOk = [&](const std::string &real_addr) -> std::string {
+		auto createBoundOk = [&](const std::string &real_addr, int sig_addr_bits) -> std::string {
 			instr.comment("Bound check");
-			auto addr_padded = def_wire.temp(addr_bits + 1);
+			auto max_width = std::max(sig_addr_bits, mem_addr_bits);
+			auto addr_padded = def_wire.temp(max_width + 1);
 			auto bound_ok = def_wire.temp(1);
-			instr.PADZERO(addr_padded, real_addr, addr_bits + 1);
-			instr.SLT(bound_ok, addr_padded, def_const.get(Const(mem->size, addr_bits + 1)));
+			instr.PADZERO(addr_padded, real_addr, max_width + 1);
+			instr.SLT(bound_ok, addr_padded, def_const.get(Const(mem->size,  max_width + 1)));
 			return bound_ok;
 		};
 
@@ -1138,7 +1139,8 @@ struct ManticoreAssemblyWorker {
 			log_assert(rd_cell->getParam(ID::SRST_VALUE).is_fully_undef());
 			log_assert(rd_cell->getParam(ID::TRANSPARENCY_MASK).is_fully_zero());
 			log_assert(rd_cell->getParam(ID::WIDTH).as_int() == mem->width);
-			log_assert(rd_cell->getParam(ID::ABITS).as_int() == addr_bits);
+			auto sig_addr_bits = rd_cell->getParam(ID::ABITS).as_int();
+			// log_assert(rd_cell->getParam(ID::ABITS).as_int() == addr_bits);
 
 			log_assert(rd_cell->getPort(ID::EN).is_fully_ones());
 
@@ -1162,7 +1164,7 @@ struct ManticoreAssemblyWorker {
 			// could only issue a warning for upper bound errors not lower bound
 			// ones since we are subtracting the offset from the address... also
 			// for store we don't do the same...
-			auto bound_ok = createBoundOk(addr_name);
+			auto bound_ok = createBoundOk(addr_name, sig_addr_bits);
 			instr.MUX(rdata_name, bound_ok, def_const.get(Const(0, rd_width)), raw_rd_name);
 		}
 		auto write_operations = memory_writes[memid];
@@ -1174,8 +1176,8 @@ struct ManticoreAssemblyWorker {
 
 			log_assert(wr_cell->getParam(ID::CLK_ENABLE).as_bool());
 			log_assert(wr_cell->getParam(ID::WIDTH).as_int() == mem->width);
-			log_assert(wr_cell->getParam(ID::ABITS).as_int() == addr_bits);
-
+			// log_assert(wr_cell->getParam(ID::ABITS).as_int() == addr_bits);
+			auto sig_addr_bits = wr_cell->getParam(ID::ABITS).as_int();
 			// check the EN signal, if the EN signal is not a fully repeated bit
 			// pattern then create sequences of loads followed by stores to
 			// emulate "bit-strobes".
@@ -1197,7 +1199,7 @@ struct ManticoreAssemblyWorker {
 				auto checked_predicate = predicate;
 				if (has_upper_bound_check) {
 					// has bound check
-					auto bound_ok = createBoundOk(addr_name);
+					auto bound_ok = createBoundOk(addr_name, sig_addr_bits);
 					checked_predicate = def_wire.temp(1);
 					instr.AND(checked_predicate, predicate, bound_ok);
 				}
@@ -1232,7 +1234,7 @@ struct ManticoreAssemblyWorker {
 						auto checked_pred = pred;
 						if (has_upper_bound_check) {
 							// has bound check
-							auto bound_ok = createBoundOk(addr_name);
+							auto bound_ok = createBoundOk(addr_name, sig_addr_bits);
 							checked_pred = def_wire.temp(1);
 							instr.AND(checked_pred, pred, bound_ok);
 						}
