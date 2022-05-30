@@ -970,7 +970,7 @@ struct ManticoreAssemblyWorker {
 				instr.SRL(y_name, padConvert(cell->getPort(ID::A), w), convert(cell->getPort(ID::B)));
 			}
 
-		} else if (cell->type == ID($shift)) {
+		} else if (cell->type == ID($shift) || cell->type == ID($shiftx)) {
 
 			// although the following implementation maybe correct, I don't have
 			// have a way of testing this so I am going to throw an error so that
@@ -981,25 +981,31 @@ struct ManticoreAssemblyWorker {
 				  "any circuit that results in these cell. Please submit your Verilog files as a git issue so we can patch and test "
 				  "our compiler.");
 			auto b_signed = cell->getParam(ID::B_SIGNED).as_bool();
+
 			auto a_name = convert(cell->getPort(ID::A));
-			auto b_name = convert(cell->getPort(ID::B));
 			auto y_name = convert(cell->getPort(ID::Y));
+			auto b_name = convert(cell->getPort(ID::B));
+			auto a_width = cell->getParam(ID::A_WIDTH).as_int();
+			auto b_width = cell->getParam(ID::B_WIDTH).as_int();
+			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
+
 			if (!b_signed) {
 				instr.SRL(y_name, a_name, b_name);
 			} else {
 				// get the sign bit
-				auto a_width = cell->getParam(ID::A_WIDTH).as_int();
-				auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
+				auto shift_bits = bitLength(y_width);
+				auto b_sig = cell->getPort(ID::B);
+				auto shift_sig = b_sig.extract(0, shift_bits);
+				auto shift_wire = convert(shift_sig);
 
 				auto sel = def_wire.temp(1);
-				instr.SRL(sel, a_name, def_const.get(Const(a_width - 1, 32)));
+				instr.SRL(sel, b_name, def_const.get(Const(b_width - 1, 32)));
 				auto r1 = def_wire.temp(y_width);
 				auto r2 = def_wire.temp(y_width);
 				// perform a right logical shift if B is positive
 				instr.SRL(r1, a_name, b_name);
 				// or do a left logical shift if B is negative but
 				// use the positive representation of B
-				auto b_width = cell->getParam(ID::B_WIDTH).as_int();
 				auto b_not = def_wire.temp(b_width);
 				instr.XOR(b_not, b_name, def_const.get(Const(State::S1, b_width)));
 				auto b_neg = def_wire.temp(b_width);
