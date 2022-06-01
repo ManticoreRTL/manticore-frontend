@@ -76,7 +76,7 @@ static inline std::string sourceInfo(RTLIL::AttrObject *obj)
 
 	if (obj->has_attribute(ID::src)) {
 		auto src = obj->get_src_attribute();
-		return stringf("@Sourceinfo [ file = \"%s\" ]", src.c_str());
+		return stringf("@SOURCEINFO [ file = \"%s\" ]", src.c_str());
 	}
 	return "";
 }
