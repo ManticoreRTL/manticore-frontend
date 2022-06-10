@@ -629,28 +629,31 @@ struct ManticoreAssemblyWorker {
 	auto a_name = convert(cell->getPort(ID::A));                                                                                                 \
 	auto y_name = convert(cell->getPort(ID::Y));
 
+	std::string extendOrSlice(const SigSpec &sig, int width, bool is_signed)
+	{
+		auto sig_size = sig.size();
+		if (sig_size <= width && is_signed) {
+			return sextConvert(sig, width);
+		} else if (sig_size <= width && !is_signed) {
+			return padConvert(sig, width);
+		} else {
+			return convert(sig.extract(0, width));
+		}
+	}
 	std::pair<std::string, std::string> convertBinaryOperands(Cell *cell)
 	{
 
 		auto checker = CellSanityChecker(cell);
 		auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
-		auto a_width = cell->getParam(ID::A_WIDTH).as_int();
-		auto b_width = cell->getParam(ID::B_WIDTH).as_int();
 		auto a_signed = cell->getParam(ID::A_SIGNED).as_bool();
-
 		checker.assertEqualSigns();
-		auto w = std::max(std::max(a_width, b_width), y_width);
-		if (a_signed) {
-			return std::make_pair(sextConvert(cell->getPort(ID::A), w), sextConvert(cell->getPort(ID::B), w));
-		} else {
-			return std::make_pair(padConvert(cell->getPort(ID::A), w), padConvert(cell->getPort(ID::B), w));
-		}
+		return std::make_pair(extendOrSlice(cell->getPort(ID::A), y_width, a_signed), extendOrSlice(cell->getPort(ID::B), y_width, a_signed));
 	}
 	// convert a cell into instructions
 	void convert(Cell *cell)
 	{
 
-		auto checker = CellSanityChecker(cell);
+
 
 		instr.comment(cell);
 		if (cell->type == ID($not)) {
@@ -778,32 +781,29 @@ struct ManticoreAssemblyWorker {
 		} // end of unary ops
 		  // begin binary ops
 		else if (cell->type == ID($and)) {
-			checker.assertOutputIsMaxWidth();
 			auto operands = convertBinaryOperands(cell);
 			instr.AND(convert(cell->getPort(ID::Y)), operands.first, operands.second);
 		} else if (cell->type == ID($or)) {
-			checker.assertOutputIsMaxWidth();
 			auto operands = convertBinaryOperands(cell);
 			instr.OR(convert(cell->getPort(ID::Y)), operands.first, operands.second);
 		} else if (cell->type == ID($xor)) {
-			checker.assertOutputIsMaxWidth();
 			auto operands = convertBinaryOperands(cell);
 			instr.XOR(convert(cell->getPort(ID::Y)), operands.first, operands.second);
 		} else if (cell->type == ID($xnor)) {
-			checker.assertOutputIsMaxWidth();
 			auto operands = convertBinaryOperands(cell);
 			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
 			auto temp = def_wire.temp(y_width);
 			instr.XOR(temp, operands.first, operands.second);
 			instr.XOR(convert(cell->getPort(ID::Y)), temp, def_const.get(Const(State::S1, y_width)));
 		} else if (cell->type == ID($add)) {
-			checker.assertOutputIsMaxWidth();
 			auto operands = convertBinaryOperands(cell);
 			instr.ADD(convert(cell->getPort(ID::Y)), operands.first, operands.second);
 		} else if (cell->type == ID($sub)) {
-			checker.assertOutputIsMaxWidth();
 			auto operands = convertBinaryOperands(cell);
 			instr.SUB(convert(cell->getPort(ID::Y)), operands.first, operands.second);
+		} else if (cell->type == ID($mul)) {
+			auto operands = convertBinaryOperands(cell);
+			instr.MUL(convert(cell->getPort(ID::Y)), operands.first, operands.second);
 		} else if (cell->type == ID($eq)) {
 
 			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
@@ -985,7 +985,7 @@ struct ManticoreAssemblyWorker {
 			auto a_name = convert(cell->getPort(ID::A));
 			auto y_name = convert(cell->getPort(ID::Y));
 			auto b_name = convert(cell->getPort(ID::B));
-			auto a_width = cell->getParam(ID::A_WIDTH).as_int();
+
 			auto b_width = cell->getParam(ID::B_WIDTH).as_int();
 			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
 
@@ -1129,7 +1129,7 @@ struct ManticoreAssemblyWorker {
 			auto addr_padded = def_wire.temp(max_width + 1);
 			auto bound_ok = def_wire.temp(1);
 			instr.PADZERO(addr_padded, real_addr, max_width + 1);
-			instr.SLT(bound_ok, addr_padded, def_const.get(Const(mem->size,  max_width + 1)));
+			instr.SLT(bound_ok, addr_padded, def_const.get(Const(mem->size, max_width + 1)));
 			return bound_ok;
 		};
 
