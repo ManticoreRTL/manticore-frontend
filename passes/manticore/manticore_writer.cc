@@ -965,7 +965,13 @@ struct ManticoreAssemblyWorker {
 			auto y_name = convert(cell->getPort(ID::Y));
 			auto w = std::max(a_width, y_width);
 			if (a_signed) {
-				instr.SRA(y_name, sextConvert(cell->getPort(ID::A), w), convert(cell->getPort(ID::B)));
+				if (y_width < w) {
+					auto widened = def_wire.temp(w);
+					instr.SRA(widened, convert(cell->getPort(ID::A)), convert(cell->getPort(ID::B)));
+					instr.SLICE(y_name, widened, 0, y_width);
+				} else {
+					instr.SRA(y_name, sextConvert(cell->getPort(ID::A), w), convert(cell->getPort(ID::B)));
+				}
 			} else {
 				instr.SRL(y_name, padConvert(cell->getPort(ID::A), w), convert(cell->getPort(ID::B)));
 			}
