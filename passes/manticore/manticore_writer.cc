@@ -144,7 +144,7 @@ struct WireBuilder {
       private:
 	void tryCreateState(Cell *dff)
 	{
-		log_assert(dff->type == ID($dff));
+		log_assert(dff->type == ID($dff) || dff->type == ID($memrd_v2));
 		if (!states.count(dff)) {
 			int width = dff->getParam(ID::WIDTH).as_int();
 			auto r_name = namer.next("r");
@@ -653,8 +653,6 @@ struct ManticoreAssemblyWorker {
 	void convert(Cell *cell)
 	{
 
-
-
 		instr.comment(cell);
 		if (cell->type == ID($not)) {
 			auto width = cell->getParam(ID::A_WIDTH).as_int();
@@ -1114,8 +1112,6 @@ struct ManticoreAssemblyWorker {
 		bool has_lower_bound_check = (mem->start_offset != 0);
 		bool has_upper_bound_check = (mem->size != (1 << mem_addr_bits));
 
-		auto read_operations = memory_reads[memid];
-
 		auto mem_name = def_wire.getMemory(mem);
 
 		auto addrFromLowerBound = [&](Cell *mcell) -> std::string {
@@ -1139,52 +1135,84 @@ struct ManticoreAssemblyWorker {
 			return bound_ok;
 		};
 
-		for (auto rd_cell : read_operations) {
+		auto convertReadData = [this](Cell *cell) {
+			instr.comment("memory internal dff");
+			bool clocked = cell->getParam(ID::CLK_ENABLE).as_bool();
+			auto data_name = convert(cell->getPort(ID::DATA));
+			if (clocked) {
+				auto current = def_wire.getCurrent(cell);
+				auto next = def_wire.getNext(cell);
+				// instr.MOV(data_name, current);
+				auto has_arst = !cell->getPort(ID::ARST).is_fully_zero();
+				auto has_rst = !cell->getPort(ID::SRST).is_fully_zero();
+				auto has_dyn_en = !cell->getPort(ID::EN).is_fully_ones();
+				log_assert(!(has_arst && has_rst)); // can have only one of them!
+				// here we may be creating dead wires, but that's fine for now...
+				auto loaded_value = next;
+				auto port_width = cell->getParam(ID::WIDTH).as_int();
+				if (has_arst) {
+					loaded_value = def_wire.temp(port_width);
+					// we need to MUX the next and current value
+					auto arst_name = convert(cell->getPort(ID::ARST));
+					instr.MUX(data_name, arst_name, current, def_const.get(cell->getParam(ID::ARST_VALUE)));
+					if (has_dyn_en) {
+						auto loaded_en = def_wire.temp(port_width);
+						instr.MUX(loaded_en, convert(cell->getPort(ID::EN)), current, loaded_value);
+						instr.MUX(next, convert(cell->getPort(ID::ARST)), loaded_en,
+							  def_const.get(cell->getParam(ID::ARST_VALUE)));
 
-			// log_assert(rd_cell->getParam(ID::ARST_VALUE).is)
-			log_assert(rd_cell->getParam(ID::ARST_VALUE).is_fully_undef());
-			log_assert(rd_cell->getParam(ID::CE_OVER_SRST).as_bool() == false);
-			log_assert(rd_cell->getParam(ID::CLK_ENABLE).as_bool() == false);
-			log_assert(rd_cell->getParam(ID::CLK_POLARITY).as_bool() == false);
-			log_assert(rd_cell->getParam(ID::COLLISION_X_MASK).is_fully_zero());
-			log_assert(rd_cell->getParam(ID::INIT_VALUE).is_fully_undef());
-			log_assert(rd_cell->getParam(ID::SRST_VALUE).is_fully_undef());
-			log_assert(rd_cell->getParam(ID::TRANSPARENCY_MASK).is_fully_zero());
-			log_assert(rd_cell->getParam(ID::WIDTH).as_int() == mem->width);
-			auto sig_addr_bits = rd_cell->getParam(ID::ABITS).as_int();
-			// log_assert(rd_cell->getParam(ID::ABITS).as_int() == addr_bits);
+					} else {
+						instr.MUX(next, convert(cell->getPort(ID::ARST)), loaded_value,
+							  def_const.get(cell->getParam(ID::ARST_VALUE)));
+					}
+					return loaded_value;
+				} else if (has_rst) {
+					instr.MOV(data_name, current);
+					loaded_value = def_wire.temp(port_width);
+					auto ce_override = cell->getParam(ID::CE_OVER_SRST).as_bool();
+					auto srst_name = convert(cell->getPort(ID::SRST));
+					auto srst_value = def_const.get(cell->getParam(ID::SRST_VALUE));
+					if (has_dyn_en && ce_override) {
+						// SRST only works if EN
+						auto loaded_rst = def_wire.temp(port_width);
+						instr.MUX(loaded_rst, srst_name, loaded_value, srst_value);
+						instr.MUX(next, convert(cell->getPort(ID::EN)), current, loaded_rst);
+					} else if (has_dyn_en && !ce_override) {
 
-			log_assert(rd_cell->getPort(ID::EN).is_fully_ones());
+						auto loaded_en = def_wire.temp(port_width);
+						instr.MUX(loaded_en, convert(cell->getPort(ID::EN)), current, loaded_value);
+						instr.MUX(next, srst_name, loaded_en, srst_value);
+					} else {
+						log_assert(!has_dyn_en);
+						instr.MUX(next, srst_name, loaded_value, srst_value);
+					}
+				} else if (has_dyn_en) {
+					instr.MOV(data_name, current);
+					auto loaded_value = def_wire.temp(port_width);
+					instr.MUX(next, convert(cell->getPort(ID::EN)), current, loaded_value);
 
-			auto addr_name = addrFromLowerBound(rd_cell);
-			auto rdata_name = convert(rd_cell->getPort(ID::DATA));
-			instr.emit(sourceInfo(rd_cell));
-			if (!has_upper_bound_check) {
-				instr.LOAD(rdata_name, addr_name, mem_name, 0);
-				continue;
+				} // else not neede because default value of loade_value is next
+				return loaded_value;
+			} else {
+				// easy case; none of the nonsense of dealing with a register
+				log_assert(cell->getPort(ID::EN).is_fully_ones());
+				log_assert(cell->getPort(ID::SRST).is_fully_zero());
+				log_assert(cell->getPort(ID::ARST).is_fully_zero());
+
+				return data_name;
 			}
-			// most memories don't require bound checking since their address is guaranteed to be within bounds
-			// but now that we have memory that has bound checks we need to explicitly handle it. Note that
-			// Yosys' memory_memx pass may do the job, but it adds the check even if it is unnecessary! So we have
-			// to handle it ourselves
-			auto rd_width = rd_cell->getParam(ID::WIDTH).as_int();
-			auto raw_rd_name = def_wire.temp(rd_width);
-			instr.LOAD(raw_rd_name, addr_name, mem_name, 0);
-			// note that we still use the potentially out-of-range address so that
-			// we allow Manticore to emit a warning if it wants but we set the final
-			// loaded value to zero if the bound check fails. Though manticore
-			// could only issue a warning for upper bound errors not lower bound
-			// ones since we are subtracting the offset from the address... also
-			// for store we don't do the same...
-			auto bound_ok = createBoundOk(addr_name, sig_addr_bits);
-			instr.MUX(rdata_name, bound_ok, def_const.get(Const(0, rd_width)), raw_rd_name);
-		}
-		auto write_operations = memory_writes[memid];
+		};
 
+		auto write_operations = memory_writes[memid];
+		// handle write operatations first and record their order
 		// sort the write by the port id
 		std::sort(write_operations.begin(), write_operations.end(),
 			  [](Cell *cell1, Cell *cell2) { return cell1->getParam(ID::PORTID).as_int() < cell2->getParam(ID::PORTID).as_int(); });
+		std::vector<int> write_port_order;
+
+		int order = 1;
 		for (auto wr_cell : write_operations) {
+			log("Handling STORE instructions for %s (port %d)\n", log_id(wr_cell), wr_cell->getParam(ID::PORTID).as_int());
 
 			log_assert(wr_cell->getParam(ID::CLK_ENABLE).as_bool());
 			log_assert(wr_cell->getParam(ID::WIDTH).as_int() == mem->width);
@@ -1201,7 +1229,6 @@ struct ManticoreAssemblyWorker {
 
 			auto addr_name = addrFromLowerBound(wr_cell);
 
-			int order = 1;
 			if (!en_sig.is_fully_ones() && is_full_repeat) {
 
 				instr.emit(sourceInfo(wr_cell));
@@ -1251,6 +1278,7 @@ struct ManticoreAssemblyWorker {
 							instr.AND(checked_pred, pred, bound_ok);
 						}
 						instr.STORE(combined_word, addr_name, checked_pred, mem_name, order++);
+
 					} else {
 
 						// either we have en_part.bit.data == State::S0 or State::Sx;
@@ -1258,6 +1286,58 @@ struct ManticoreAssemblyWorker {
 					}
 				}
 			}
+			log_assert(GetSize(write_port_order) == wr_cell->getParam(ID::PORTID).as_int());
+			write_port_order.push_back(order);
+		}
+
+		auto read_operations = memory_reads[memid];
+
+		for (auto rd_cell : read_operations) {
+
+			auto transparency_mask = rd_cell->getParam(ID::TRANSPARENCY_MASK).bits;
+			order = 0;
+			// for (int port_ix = 0; port_ix < GetSize(transparency_mask); port_ix++) {
+			// 	if (transparency_mask[port_ix] == State::S1) {
+			// 		order = std::max(order, write_port_order[port_ix]);
+			// 	}
+			// }
+
+			if (order > 0) {
+				log_assert(!rd_cell->getParam(ID::TRANSPARENCY_MASK).is_fully_zero());
+				log_assert(rd_cell->getParam(ID::COLLISION_X_MASK).is_fully_zero());
+			} else {
+				// we may have write collision and we model the behavior as
+				// read-then-write (i.e., order loads before stores)
+			}
+
+			log_assert(rd_cell->getParam(ID::WIDTH).as_int() == mem->width);
+			auto sig_addr_bits = rd_cell->getParam(ID::ABITS).as_int();
+			// log_assert(rd_cell->getParam(ID::ABITS).as_int() == addr_bits);
+
+			// log_assert(rd_cell->getPort(ID::EN).is_fully_ones());
+
+			auto addr_name = addrFromLowerBound(rd_cell);
+			auto rdata_name = convertReadData(rd_cell); // handle internal registers
+			instr.emit(sourceInfo(rd_cell));
+			if (!has_upper_bound_check) {
+				instr.LOAD(rdata_name, addr_name, mem_name, 0);
+				continue;
+			}
+			// most memories don't require bound checking since their address is guaranteed to be within bounds
+			// but now that we have memory that has bound checks we need to explicitly handle it. Note that
+			// Yosys' memory_memx pass may do the job, but it adds the check even if it is unnecessary! So we have
+			// to handle it ourselves
+			auto rd_width = rd_cell->getParam(ID::WIDTH).as_int();
+			auto raw_rd_name = def_wire.temp(rd_width);
+			instr.LOAD(raw_rd_name, addr_name, mem_name, 0);
+			// note that we still use the potentially out-of-range address so that
+			// we allow Manticore to emit a warning if it wants but we set the final
+			// loaded value to zero if the bound check fails. Though manticore
+			// could only issue a warning for upper bound errors not lower bound
+			// ones since we are subtracting the offset from the address... also
+			// for store we don't do the same...
+			auto bound_ok = createBoundOk(addr_name, sig_addr_bits);
+			instr.MUX(rdata_name, bound_ok, def_const.get(Const(0, rd_width)), raw_rd_name);
 		}
 	}
 
