@@ -155,8 +155,7 @@ struct WireBuilder {
 				defs << "\t" << srcinfo << std::endl;
 			}
 			regs << "\t.reg " << r_name << " " << width << " .input " << q_name << " ";
-			if (dff->has_attribute(ID::INIT)) {
-				auto initval = dff->get_const_attribute(ID::INIT);
+			auto resolveInitBits = [dff](const Const& initval) {
 				std::vector<RTLIL::State> bits;
 				for (int ix = 0; ix < initval.size(); ix++) {
 					if (initval.bits[ix] == State::S0 || initval.bits[ix] == State::S1) {
@@ -166,7 +165,14 @@ struct WireBuilder {
 						bits.push_back(State::S0);
 					}
 				}
-				regs << "0b" << Const(bits).as_string() << " ";
+				return Const(bits);
+			};
+			if (dff->has_attribute(ID::INIT)) {
+				auto initval = dff->get_const_attribute(ID::INIT);
+				regs << "0b" << resolveInitBits(initval).as_string() << " ";
+			} else if (dff->hasParam(ID::INIT_VALUE)) {
+				auto initval = dff->getParam(ID::INIT_VALUE);
+				regs << "0b" << resolveInitBits(initval).as_string() << " ";
 			}
 			regs << ".output " << d_name << std::endl;
 			states.emplace(dff, std::make_pair(q_name, d_name));
@@ -1138,17 +1144,18 @@ struct ManticoreAssemblyWorker {
 		auto convertReadData = [this](Cell *cell) {
 			instr.comment("memory internal dff");
 			bool clocked = cell->getParam(ID::CLK_ENABLE).as_bool();
-			auto data_name = convert(cell->getPort(ID::DATA));
+			const auto data_name = convert(cell->getPort(ID::DATA));
 			if (clocked) {
-				auto current = def_wire.getCurrent(cell);
-				auto next = def_wire.getNext(cell);
+
+				const auto current = def_wire.getCurrent(cell);
+				const auto next = def_wire.getNext(cell);
 				// instr.MOV(data_name, current);
 				auto has_arst = !cell->getPort(ID::ARST).is_fully_zero();
 				auto has_rst = !cell->getPort(ID::SRST).is_fully_zero();
 				auto has_dyn_en = !cell->getPort(ID::EN).is_fully_ones();
 				log_assert(!(has_arst && has_rst)); // can have only one of them!
 				// here we may be creating dead wires, but that's fine for now...
-				auto loaded_value = next;
+				std::string loaded_value = next;
 				auto port_width = cell->getParam(ID::WIDTH).as_int();
 				if (has_arst) {
 					loaded_value = def_wire.temp(port_width);
@@ -1156,12 +1163,14 @@ struct ManticoreAssemblyWorker {
 					auto arst_name = convert(cell->getPort(ID::ARST));
 					instr.MUX(data_name, arst_name, current, def_const.get(cell->getParam(ID::ARST_VALUE)));
 					if (has_dyn_en) {
+						instr.comment("adffe");
 						auto loaded_en = def_wire.temp(port_width);
 						instr.MUX(loaded_en, convert(cell->getPort(ID::EN)), current, loaded_value);
 						instr.MUX(next, convert(cell->getPort(ID::ARST)), loaded_en,
 							  def_const.get(cell->getParam(ID::ARST_VALUE)));
 
 					} else {
+						instr.comment("adff");
 						instr.MUX(next, convert(cell->getPort(ID::ARST)), loaded_value,
 							  def_const.get(cell->getParam(ID::ARST_VALUE)));
 					}
@@ -1174,24 +1183,31 @@ struct ManticoreAssemblyWorker {
 					auto srst_value = def_const.get(cell->getParam(ID::SRST_VALUE));
 					if (has_dyn_en && ce_override) {
 						// SRST only works if EN
+						instr.comment("sdffce");
 						auto loaded_rst = def_wire.temp(port_width);
 						instr.MUX(loaded_rst, srst_name, loaded_value, srst_value);
 						instr.MUX(next, convert(cell->getPort(ID::EN)), current, loaded_rst);
 					} else if (has_dyn_en && !ce_override) {
-
+						instr.comment("sdffe");
 						auto loaded_en = def_wire.temp(port_width);
 						instr.MUX(loaded_en, convert(cell->getPort(ID::EN)), current, loaded_value);
 						instr.MUX(next, srst_name, loaded_en, srst_value);
 					} else {
+						instr.comment("sdff");
 						log_assert(!has_dyn_en);
 						instr.MUX(next, srst_name, loaded_value, srst_value);
 					}
 				} else if (has_dyn_en) {
+					instr.comment("dffe");
 					instr.MOV(data_name, current);
-					auto loaded_value = def_wire.temp(port_width);
+					loaded_value = def_wire.temp(port_width);
 					instr.MUX(next, convert(cell->getPort(ID::EN)), current, loaded_value);
 
-				} // else not neede because default value of loade_value is next
+				} else {
+					instr.MOV(data_name, current);
+					loaded_value = next;
+				}
+				instr.comment(stringf("// uses %s", loaded_value.c_str()));
 				return loaded_value;
 			} else {
 				// easy case; none of the nonsense of dealing with a register
@@ -1296,11 +1312,11 @@ struct ManticoreAssemblyWorker {
 
 			auto transparency_mask = rd_cell->getParam(ID::TRANSPARENCY_MASK).bits;
 			order = 0;
-			// for (int port_ix = 0; port_ix < GetSize(transparency_mask); port_ix++) {
-			// 	if (transparency_mask[port_ix] == State::S1) {
-			// 		order = std::max(order, write_port_order[port_ix]);
-			// 	}
-			// }
+			for (int port_ix = 0; port_ix < GetSize(transparency_mask); port_ix++) {
+				if (transparency_mask[port_ix] == State::S1) {
+					order = std::max(order, write_port_order[port_ix]);
+				}
+			}
 
 			if (order > 0) {
 				log_assert(!rd_cell->getParam(ID::TRANSPARENCY_MASK).is_fully_zero());
@@ -1320,7 +1336,7 @@ struct ManticoreAssemblyWorker {
 			auto rdata_name = convertReadData(rd_cell); // handle internal registers
 			instr.emit(sourceInfo(rd_cell));
 			if (!has_upper_bound_check) {
-				instr.LOAD(rdata_name, addr_name, mem_name, 0);
+				instr.LOAD(rdata_name, addr_name, mem_name, order);
 				continue;
 			}
 			// most memories don't require bound checking since their address is guaranteed to be within bounds
@@ -1329,7 +1345,7 @@ struct ManticoreAssemblyWorker {
 			// to handle it ourselves
 			auto rd_width = rd_cell->getParam(ID::WIDTH).as_int();
 			auto raw_rd_name = def_wire.temp(rd_width);
-			instr.LOAD(raw_rd_name, addr_name, mem_name, 0);
+			instr.LOAD(raw_rd_name, addr_name, mem_name, order);
 			// note that we still use the potentially out-of-range address so that
 			// we allow Manticore to emit a warning if it wants but we set the final
 			// loaded value to zero if the bound check fails. Though manticore
