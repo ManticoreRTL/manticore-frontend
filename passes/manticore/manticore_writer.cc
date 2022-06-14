@@ -689,11 +689,15 @@ struct ManticoreAssemblyWorker {
 			}
 
 		} else if (cell->type == ID($neg)) {
-			UNARY_OP_HEADER
-			log_assert(a_width == y_width);
-			auto bits_flipped = def_wire.temp(a_width);
-			instr.XOR(bits_flipped, a_name, def_const.get(Const(State::S1, a_width)));
-			instr.ADD(y_name, bits_flipped, def_const.get(Const(1, a_width)));
+
+			auto y_width = cell->getParam(ID::Y_WIDTH).as_int();
+			auto a_width = cell->getParam(ID::A_WIDTH).as_int();
+			log_assert(a_width <= y_width);
+			auto a_name = sextConvert(cell->getPort(ID::A), y_width);
+			auto y_name = convert(cell->getPort(ID::Y));
+			auto bits_flipped = def_wire.temp(y_width);
+			instr.XOR(bits_flipped, a_name, def_const.get(Const(State::S1, y_width)));
+			instr.ADD(y_name, bits_flipped, def_const.get(Const(1, y_width)));
 
 		} else if (cell->type == ID($reduce_and)) {
 			UNARY_OP_HEADER
@@ -986,10 +990,10 @@ struct ManticoreAssemblyWorker {
 			// have a way of testing this so I am going to throw an error so that
 			// anybody you finds a circuit that creates this cell has to deal
 			// with validating the implementation
-			log("Can not generate code for %s.%s of type %s\n", log_id(mod), log_id(cell), log_id(cell->type));
-			log_error("Our Yosys' code generator may have a valid translation for $shift and $shiftx but up to know I did not know of "
-				  "any circuit that results in these cell. Please submit your Verilog files as a git issue so we can patch and test "
-				  "our compiler.");
+			log_warning("Can not generate code for %s.%s of type %s\n", log_id(mod), log_id(cell), log_id(cell->type));
+			// log_error("Our Yosys' code generator may have a valid translation for $shift and $shiftx but up to know I did not know of "
+			// 	  "any circuit that results in these cell. Please submit your Verilog files as a git issue so we can patch and test "
+			// 	  "our compiler.");
 			auto b_signed = cell->getParam(ID::B_SIGNED).as_bool();
 
 			auto a_name = convert(cell->getPort(ID::A));
