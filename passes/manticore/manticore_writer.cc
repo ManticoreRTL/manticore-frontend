@@ -124,7 +124,7 @@ struct WireBuilder {
 			auto name = namer.next("w");
 
 			if (w->has_attribute(ID::hdlname)) {
-				auto dotted_name = std::regex_replace(w->get_string_attribute(ID::hdlname), std::regex(" "), "/");
+				auto dotted_name = std::regex_replace(w->get_string_attribute(ID::hdlname), std::regex(" "), ".");
 				defs << "\t@DEBUGSYMBOL [ symbol = \"" << dotted_name << "\" ]" << std::endl;
 			} else if (w->name.c_str()[0] == '\\') {
 				// this is user signal so create a debug symbol
@@ -991,9 +991,9 @@ struct ManticoreAssemblyWorker {
 			// anybody you finds a circuit that creates this cell has to deal
 			// with validating the implementation
 			log_warning("Can not generate code for %s.%s of type %s\n", log_id(mod), log_id(cell), log_id(cell->type));
-			// log_error("Our Yosys' code generator may have a valid translation for $shift and $shiftx but up to know I did not know of "
-			// 	  "any circuit that results in these cell. Please submit your Verilog files as a git issue so we can patch and test "
-			// 	  "our compiler.");
+			log_error("Our Yosys' code generator may have a valid translation for $shift and $shiftx but up to know I did not know of "
+				  "any circuit that results in these cell. Please submit your Verilog files as a git issue so we can patch and test "
+				  "our compiler.");
 			auto b_signed = cell->getParam(ID::B_SIGNED).as_bool();
 
 			auto a_name = convert(cell->getPort(ID::A));
