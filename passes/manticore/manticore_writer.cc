@@ -56,12 +56,15 @@ static inline std::string convertFmt(const std::string &original, std::vector<st
 		if (spec_type_pos == std::string::npos) {
 			log_error("Invalid specifier %s\n", original.c_str());
 		}
+
 		log_assert(size_ix < GetSize(sizes));
 
 		auto size_str = sizes[size_ix++];
 		auto size_begin = p.find_first_of("123456789");
-		if (size_begin != std::string::npos) {
+		if (size_begin != std::string::npos && size_begin < spec_type_pos) {
 			size_str = p.substr(size_begin, spec_type_pos);
+			log_error("Can not handle format specifier %s\n", p.c_str());
+			log_flush();
 		}
 		builder << size_str << p[spec_type_pos];
 		if (spec_type_pos + 1 < p.size()) {
@@ -155,13 +158,13 @@ struct WireBuilder {
 				defs << "\t" << srcinfo << std::endl;
 			}
 			regs << "\t.reg " << r_name << " " << width << " .input " << q_name << " ";
-			auto resolveInitBits = [dff](const Const& initval) {
+			auto resolveInitBits = [](const Const& initval) {
 				std::vector<RTLIL::State> bits;
 				for (int ix = 0; ix < initval.size(); ix++) {
 					if (initval.bits[ix] == State::S0 || initval.bits[ix] == State::S1) {
 						bits.push_back(initval[ix]);
 					} else {
-						log_warning("Replacing undefined bit %s.init[%d] with zero\n", log_id(dff->name), ix);
+						// log_warning("Replacing undefined bit %s.init[%d] with zero\n", log_id(dff->name), ix);
 						bits.push_back(State::S0);
 					}
 				}
@@ -1062,7 +1065,6 @@ struct ManticoreAssemblyWorker {
 			auto fmt = cell->getParam(ID::FMT).decode_string();
 			auto sizes_str = cell->getParam(ID::VAR_ARG_SIZE).decode_string();
 			auto arg_size = manticore::split(sizes_str, ',');
-
 			auto data_bits = cell->getPort(ID::B).to_sigbit_vector();
 			auto en_sig = cell->getPort(ID::EN);
 			auto en_name = convert(en_sig);

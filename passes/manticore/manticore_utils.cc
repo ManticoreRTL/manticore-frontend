@@ -25,7 +25,7 @@ std::vector<RepeatPattern> getRepeats(const SigSpec &sig, const SigMap &sigmap)
 
 	auto bits = sig.to_sigbit_vector();
 	if (bits.empty()) {
-		log_err("Can not get the repeat pattern of an empty signal %s\n", log_signal(sig));
+		log_error("Can not get the repeat pattern of an empty signal %s\n", log_signal(sig));
 	}
 
 	auto bit0 = bits.front();
