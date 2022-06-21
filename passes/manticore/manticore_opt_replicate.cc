@@ -71,7 +71,7 @@ struct MantcoreOptimizeBitReplication : public Pass {
 					continue;
 				}
 				if (cell->input(port_name)) {
-					log("checking port %s of %s\n", RTLIL::id2cstr(port_name), RTLIL::id2cstr(cell->name));
+					log("checking port %s of %s\n", log_id(port_name), log_id(cell->name));
 					auto rhs = con.second;
 					auto new_rhs = convertRhs(rhs);
 					cell->setPort(port_name, new_rhs);

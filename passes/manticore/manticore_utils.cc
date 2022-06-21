@@ -24,7 +24,10 @@ std::vector<RepeatPattern> getRepeats(const SigSpec &sig, const SigMap &sigmap)
 {
 
 	auto bits = sig.to_sigbit_vector();
-	log_assert(!bits.empty());
+	if (bits.empty()) {
+		log_err("Can not get the repeat pattern of an empty signal %s\n", log_signal(sig));
+	}
+
 	auto bit0 = bits.front();
 	auto builder = BitRepeatBuilder(sigmap(bit0));
 	for (const auto &b : bits) {
@@ -33,4 +36,3 @@ std::vector<RepeatPattern> getRepeats(const SigSpec &sig, const SigMap &sigmap)
 	return builder.build();
 }
 }; // namespace manticore
-
