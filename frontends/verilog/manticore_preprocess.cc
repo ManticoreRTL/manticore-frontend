@@ -219,11 +219,16 @@ DISPATCH_DEF(AST_CASE, switch_node)
 					negated_labels.push(negated);
 				}
 
-				m_conditions.push(conjunction(negated_labels));
+
+				if (!negated_labels.empty()) {
+					m_conditions.push(conjunction(negated_labels));
+				}
 				transformNode(case_cond);
-				delete m_conditions.top();
-				m_conditions.pop();
-				while (negated_labels.empty() == false) {
+				if (!negated_labels.empty()) {
+					delete m_conditions.top();
+					m_conditions.pop();
+				}
+				while (!negated_labels.empty()) {
 					delete negated_labels.top();
 					negated_labels.pop();
 				}
@@ -396,6 +401,7 @@ DISPATCH_DEF(AST_BLOCK, block)
 			if (m_conditions.size() == 0) {
 				cond_expr = AstNode::mkconst_int(1, false, 1);
 			} else {
+
 				cond_expr = conjunction(m_conditions);
 			}
 
