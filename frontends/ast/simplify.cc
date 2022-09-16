@@ -2835,22 +2835,23 @@ skip_dynamic_range_lvalue_expansion:;
 			// create a block for non-blocking assignments of the arguments
 			// given to the display node
 			AstNode* assignment_block = new AstNode(AST_BLOCK);
-			AstNode* default_assignment_block = new AstNode(AST_BLOCK);
+			// AstNode* default_assignment_block = new AstNode(AST_BLOCK);
 
 			AstNode* en_reg = createRegister(freshName("EN"), 1, false);
 			AstNode* en_assign = createNonBlockingAssignment(en_reg->str, mkconst_int(1, false, 1));
-			AstNode* default_en_assign = createNonBlockingAssignment(en_reg->str, mkconst_int(0, false, 1));
+			// AstNode* default_en_assign = createNonBlockingAssignment(en_reg->str, mkconst_int(0, false, 1));
 			AstNode* en_init = new AstNode(AST_INITIAL,
 				new AstNode(AST_BLOCK,
 					new AstNode(AST_ASSIGN_EQ, en_assign->children[0]->clone(), mkconst_int(0, false, 1))));
+			current_ast_mod->children.push_back(en_init);
 
 			assignment_block->children.push_back(en_assign);
 			assignment_block->filename = filename;
 			assignment_block->location = location;
 
-			default_assignment_block->children.push_back(default_en_assign);
-			default_assignment_block->filename = filename;
-			default_assignment_block->location = location;
+			// default_assignment_block->children.push_back(default_en_assign);
+			// default_assignment_block->filename = filename;
+			// default_assignment_block->location = location;
 
 			AstNode* manticore_task = new AstNode(
 					AST_MANTICORE,
@@ -2859,11 +2860,11 @@ skip_dynamic_range_lvalue_expansion:;
 					mkconst_int(manticore_order ++, false, 32)
 			);
 
-			auto defaultStateX = [](const int width, const bool sign) -> AstNode* {
-				std::vector<State> bits(width);
-				std::fill(bits.begin(), bits.end(), State::Sx);
-				return mkconst_bits(bits, sign);
-			};
+			// auto defaultStateX = [](const int width, const bool sign) -> AstNode* {
+			// 	std::vector<State> bits(width);
+			// 	std::fill(bits.begin(), bits.end(), State::Sx);
+			// 	return mkconst_bits(bits, sign);
+			// };
 			if (str == "$display") {
 				log_assert(children.size() >= 3);
 				std::vector<AstNode*> var_args (children.cbegin() + 3, children.cend());
@@ -2877,10 +2878,9 @@ skip_dynamic_range_lvalue_expansion:;
 					auto va_reg = createRegister(freshName("VARG"), reg_width, reg_sign);
 					auto va_assign = createNonBlockingAssignment(va_reg->str, va->clone());
 
-					auto va_default_assign = createNonBlockingAssignment(va_reg->str,
-						defaultStateX(reg_width, reg_sign));
+
 					assignment_block->children.push_back(va_assign);
-					default_assignment_block->children.push_back(va_default_assign);
+
 					// set the argument in the
 					manticore_task->children.push_back(va_assign->children[0]->clone());
 				}
@@ -2891,12 +2891,16 @@ skip_dynamic_range_lvalue_expansion:;
 				auto check_reg = createRegister(freshName("CHECK"), 1, false);
 				auto check_assign = createNonBlockingAssignment(check_reg->str, children.back()->clone());
 				assignment_block->children.push_back(check_assign);
-				auto default_check_assign = createNonBlockingAssignment(check_reg->str, defaultStateX(1, false));
-				default_assignment_block->children.push_back(default_check_assign);
+				// auto default_check_assign = createNonBlockingAssignment(check_reg->str, defaultStateX(1, false));
+				// default_assignment_block->children.push_back(default_check_assign);
+				AstNode* check_init = new AstNode(AST_INITIAL,
+					new AstNode(AST_BLOCK,
+						new AstNode(AST_ASSIGN_EQ, check_assign->children[0]->clone(), mkconst_int(1, false, 1))));
+				current_ast_mod->children.push_back(check_init);
 				manticore_task->children.push_back(check_assign->children[0]->clone());
 			}
 
-			current_top_block->children.insert(current_top_block->children.begin(), default_assignment_block);
+			// current_top_block->children.insert(current_top_block->children.begin(), default_assignment_block);
 
 			manticore_task->location = location;
 			manticore_task->filename = filename;
@@ -2904,7 +2908,7 @@ skip_dynamic_range_lvalue_expansion:;
 			manticore_task->str = str;
 
 			current_ast_mod->children.push_back(manticore_task);
-			current_ast_mod->children.push_back(en_init);
+
 			newNode = assignment_block;
 
 

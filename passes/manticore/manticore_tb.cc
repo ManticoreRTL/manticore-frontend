@@ -127,7 +127,8 @@ struct ManticoreTb : public Pass {
 			tb << stringf("module Main();\n");
 			tb << stringf("reg clk = 0;\n");
 		} else {
-			tb << stringf("module Main(input wire clk);\n");
+			tb << stringf("module Main(input wire clock);\n");
+			tb << stringf("wire clk = clock;");
 		}
 
 		tb << stringf("reg [7:0] rst_counter = 0;\n");
