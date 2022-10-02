@@ -1122,8 +1122,14 @@ struct ManticoreAssemblyWorker {
 		auto mem_addr_bits = bitLength(mem->size + mem->start_offset - 1);
 
 		bool has_lower_bound_check = (mem->start_offset != 0);
-		bool has_upper_bound_check = (mem->size != (1 << mem_addr_bits));
 
+		auto hasUpperBoundCheck = [&](Cell *mcell) -> bool {
+			int max_address = (1 << mcell->getPort(ID::ADDR).size());
+			int max_mem_addr = (1 << mem_addr_bits);
+			bool has_upper_bound_check = (mem->size != (1 << mem_addr_bits)) || (max_address > max_mem_addr);
+			return has_upper_bound_check;
+
+		};
 		auto mem_name = def_wire.getMemory(mem);
 
 		auto addrFromLowerBound = [&](Cell *mcell) -> std::string {
@@ -1258,7 +1264,7 @@ struct ManticoreAssemblyWorker {
 				auto wdata_name = convert(wr_cell->getPort(ID::DATA));
 				// easy case
 				auto checked_predicate = predicate;
-				if (has_upper_bound_check) {
+				if (hasUpperBoundCheck(wr_cell)) {
 					// has bound check
 					auto bound_ok = createBoundOk(addr_name, sig_addr_bits);
 					checked_predicate = def_wire.temp(1);
@@ -1293,7 +1299,7 @@ struct ManticoreAssemblyWorker {
 						instr.emit(sourceInfo(wr_cell));
 						const std::string pred = convert(SigSpec(en_part.bit));
 						auto checked_pred = pred;
-						if (has_upper_bound_check) {
+						if (hasUpperBoundCheck(wr_cell)) {
 							// has bound check
 							auto bound_ok = createBoundOk(addr_name, sig_addr_bits);
 							checked_pred = def_wire.temp(1);
@@ -1334,14 +1340,13 @@ struct ManticoreAssemblyWorker {
 
 			log_assert(rd_cell->getParam(ID::WIDTH).as_int() == mem->width);
 			auto sig_addr_bits = rd_cell->getParam(ID::ABITS).as_int();
-			// log_assert(rd_cell->getParam(ID::ABITS).as_int() == addr_bits);
 
-			// log_assert(rd_cell->getPort(ID::EN).is_fully_ones());
+
 
 			auto addr_name = addrFromLowerBound(rd_cell);
 			auto rdata_name = convertReadData(rd_cell); // handle internal registers
 			instr.emit(sourceInfo(rd_cell));
-			if (!has_upper_bound_check) {
+			if (!hasUpperBoundCheck(rd_cell)) {
 				instr.LOAD(rdata_name, addr_name, mem_name, order);
 				continue;
 			}
