@@ -1257,7 +1257,7 @@ struct ManticoreAssemblyWorker {
 
 			auto addr_name = addrFromLowerBound(wr_cell);
 
-			if (!en_sig.is_fully_ones() && is_full_repeat) {
+			if (is_full_repeat) {
 
 				instr.emit(sourceInfo(wr_cell));
 				const std::string predicate = convert(SigSpec(pattern.front().bit));
@@ -1313,6 +1313,8 @@ struct ManticoreAssemblyWorker {
 						// so we don't do anything, i.e., we don't store anything
 					}
 				}
+			} else {
+				log_error("Unhandled cell %s!\n", log_id(wr_cell));
 			}
 			log_assert(GetSize(write_port_order) == wr_cell->getParam(ID::PORTID).as_int());
 			write_port_order.push_back(order);
