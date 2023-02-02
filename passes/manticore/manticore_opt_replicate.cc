@@ -71,8 +71,10 @@ struct MantcoreOptimizeBitReplication : public Pass {
 					continue;
 				}
 				if (cell->input(port_name)) {
-					// log("checking port %s of %s\n", log_id(port_name), log_id(cell->name));
 					auto rhs = con.second;
+					if (rhs.to_sigbit_vector().empty()) {
+						log_error("empty port %s of %s\n", log_id(port_name), log_id(cell->name));
+					}
 					auto new_rhs = convertRhs(rhs);
 					cell->setPort(port_name, new_rhs);
 				}
@@ -86,9 +88,11 @@ struct MantcoreOptimizeBitReplication : public Pass {
 		// mux. If we don't do this we will end up with a tree of contatenations
 		// which are usually implemented using shift and or operations.
 		for (const auto &con : mod->connections()) {
-			auto rhs = con.second;
-			auto new_rhs = convertRhs(rhs);
-			new_connections.emplace_back(con.first, new_rhs);
+			if (!con.first.empty() && !con.second.empty()) {
+				auto rhs = con.second;
+				auto new_rhs = convertRhs(rhs);
+				new_connections.emplace_back(con.first, new_rhs);
+			}
 		}
 		mod->new_connections(new_connections);
 	};
