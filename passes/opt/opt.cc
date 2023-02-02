@@ -21,7 +21,7 @@
 #include "kernel/log.h"
 #include <stdlib.h>
 #include <stdio.h>
-
+#include <chrono>
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
@@ -61,6 +61,8 @@ struct OptPass : public Pass {
 		log("\n");
 		log("Note: Options in square brackets (such as [-keepdc]) are passed through to\n");
 		log("the opt_* commands when given to 'opt'.\n");
+		log("You can also specify either a maximum number of iterations using -max_iter N an approximate \n");
+		log("timeout using -max_seconds SECONDS\n");
 		log("\n");
 		log("\n");
 	}
@@ -74,7 +76,8 @@ struct OptPass : public Pass {
 		bool opt_share = false;
 		bool fast_mode = false;
 		bool noff_mode = false;
-
+		int64_t max_time = std::numeric_limits<uint32_t>::max();
+		uint32_t max_iter = std::numeric_limits<uint32_t>::max();
 		log_header(design, "Executing OPT pass (performing simple optimizations).\n");
 		log_push();
 
@@ -141,13 +144,36 @@ struct OptPass : public Pass {
 				noff_mode = true;
 				continue;
 			}
+			if (args[argidx] == "-max_iter") {
+				if (++argidx >= args.size()) {
+					log_cmd_error("Option -max_iter requires an argument!\n");
+				}
+				max_iter = std::stoi(args[argidx]);
+				continue;
+			}
+			if (args[argidx] == "-max_seconds") {
+				if (++argidx >= args.size()) {
+					log_cmd_error("Option -max_seconds requires an argument!\n");
+				}
+				max_time = std::stoll(args[argidx]);
+				continue;
+			}
 			break;
 		}
 		extra_args(args, argidx, design);
 
+		uint32_t iter = 0;
+		auto time_begin = std::chrono::high_resolution_clock::now();
 		if (fast_mode)
 		{
-			while (1) {
+			while (iter < max_iter) {
+				iter++;
+				auto time_now = std::chrono::high_resolution_clock::now();
+				auto duration = std::chrono::duration_cast<std::chrono::seconds>(time_now - time_begin).count();
+				if (duration >= max_time) {
+					log("Timeout reached after %ld seconds in opt", duration);
+					break;
+				}
 				Pass::call(design, "opt_expr" + opt_expr_args);
 				Pass::call(design, "opt_merge" + opt_merge_args);
 				design->scratchpad_unset("opt.did_something");
@@ -164,7 +190,14 @@ struct OptPass : public Pass {
 		{
 			Pass::call(design, "opt_expr" + opt_expr_args);
 			Pass::call(design, "opt_merge -nomux" + opt_merge_args);
-			while (1) {
+			while (iter < max_iter) {
+				iter++;
+				auto time_now = std::chrono::high_resolution_clock::now();
+				auto duration = std::chrono::duration_cast<std::chrono::seconds>(time_now - time_begin).count();
+				if (duration >= max_time) {
+					log("Timeout reached after %ld seconds in opt", duration);
+					break;
+				}
 				design->scratchpad_unset("opt.did_something");
 				Pass::call(design, "opt_muxtree");
 				Pass::call(design, "opt_reduce" + opt_reduce_args);
