@@ -41,3 +41,15 @@ __pycache__
 /tests/unit/bintest/
 /tests/unit/objtest/
 /tests/ystests
+/v2masmyosys
+/v2masmyosys.exe
+/v2masmyosys.js
+/v2masmyosys.wasm
+/v2masmyosys-abc
+/v2masmyosys-abc.exe
+/v2masmyosys-config
+/v2masmyosys-smtbmc
+/v2masmyosys-smtbmc.exe
+/v2masmyosys-smtbmc-script.py
+/v2masmyosys-filterlib
+/v2masmyosys-filterlib.exe

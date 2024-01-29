@@ -26,7 +26,7 @@ ENABLE_PROTOBUF := 0
 ENABLE_ZLIB := 1
 
 # python wrappers
-ENABLE_PYOSYS := 1
+ENABLE_PYOSYS := 0
 
 # other configuration flags
 ENABLE_GCOV := 0
@@ -51,7 +51,7 @@ SANITIZER =
 # SANITIZER = undefined
 # SANITIZER = cfi
 
-PROGRAM_PREFIX :=
+PROGRAM_PREFIX := v2masm
 
 OS := $(shell uname -s)
 PREFIX ?= /usr/local
